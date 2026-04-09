@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+venv/
+.env
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp upload files
+_hf_upload_tmp/
+
+# Large data files (optional - uncomment if you don't want data in git)
+# data.json
+# processed_data.csv
+
+# Old model files at root level (model dir has the clean ones)
+compat_model.joblib
+error_model.joblib
+mappings.joblib
+model_metrics.json
+processed_data.csv

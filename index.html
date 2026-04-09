@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PyCompat — Package Compatibility Predictor</title>
+  <meta name="description" content="AI-powered Python package compatibility prediction engine. Find the best compatible package versions for your system.">
+  <link rel="stylesheet" href="/index.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+  <!-- Header -->
+  <header class="header">
+    <div class="header-content">
+      <div class="logo">
+        <div class="logo-icon">🧬</div>
+        <div>
+          <h1>PyCompat</h1>
+          <p>AI Compatibility Engine</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <span id="statusDot" class="status-dot"></span>
+        <span id="statusText" style="font-size:0.8rem;color:var(--text-muted)">Connecting...</span>
+        <button class="btn btn-secondary btn-sm" onclick="retrain()" id="retrainBtn">🔄 Retrain</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Tabs -->
+  <nav class="nav-tabs">
+    <button class="nav-tab active" onclick="switchTab('predict')" id="tab-predict">🔍 Predict</button>
+    <button class="nav-tab" onclick="switchTab('recommend')" id="tab-recommend">⭐ Recommend</button>
+    <button class="nav-tab" onclick="switchTab('analytics')" id="tab-analytics">📊 Analytics</button>
+    <button class="nav-tab" onclick="switchTab('packages')" id="tab-packages">📦 Packages</button>
+  </nav>
+
+  <!-- Main Content -->
+  <main class="container">
+
+    <!-- ===== PREDICT TAB ===== -->
+    <section id="content-predict" class="tab-content active">
+      <div class="stats-grid" id="overviewStats">
+        <div class="stat-card"><div class="stat-label">Total Packages</div><div class="stat-value" id="totalPkgs">—</div></div>
+        <div class="stat-card"><div class="stat-label">Total Tests</div><div class="stat-value" id="totalTests">—</div></div>
+        <div class="stat-card"><div class="stat-label">Compatibility Rate</div><div class="stat-value" id="compatRate">—</div><div class="stat-sub" id="compatSub"></div></div>
+        <div class="stat-card"><div class="stat-label">Model Accuracy</div><div class="stat-value" id="modelAcc">—</div><div class="stat-sub" id="modelF1"></div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><span class="icon">🔬</span> Compatibility Checker</div>
+        <div class="form-grid">
+          <div class="form-group">
+            <label for="predPkg">Package</label>
+            <select id="predPkg" onchange="loadVersions('predPkg','predVer')">
+              <option value="">Select package...</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="predVer">Version</label>
+            <select id="predVer">
+              <option value="">Select version...</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="predPy">Python Version</label>
+            <select id="predPy">
+              <option value="3.12">Python 3.12</option>
+              <option value="3.11">Python 3.11</option>
+              <option value="3.10">Python 3.10</option>
+              <option value="3.9">Python 3.9</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="predPlat">Platform</label>
+            <select id="predPlat">
+              <option value="darwin_x86_64">macOS Intel (x86_64)</option>
+              <option value="darwin_arm64">macOS Apple Silicon</option>
+              <option value="linux_x86_64">Linux x86_64</option>
+              <option value="win_amd64">Windows x64</option>
+            </select>
+          </div>
+        </div>
+        <button class="btn btn-primary" onclick="predictCompatibility()" id="predictBtn">🔍 Check Compatibility</button>
+
+        <div id="predictResult" style="display:none" class="result-card">
+          <div class="card" style="margin-top:1rem">
+            <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem">
+              <div>
+                <div style="font-size:1.1rem;font-weight:600" id="resTitle"></div>
+                <div style="font-size:0.85rem;color:var(--text-secondary);margin-top:0.25rem" id="resSubtitle"></div>
+              </div>
+              <div id="resBadge"></div>
+            </div>
+            <div style="margin-top:1rem">
+              <div style="display:flex;justify-content:space-between;font-size:0.8rem;margin-bottom:0.3rem">
+                <span style="color:var(--text-secondary)">Confidence</span>
+                <span id="resConfidence" style="font-weight:600"></span>
+              </div>
+              <div class="confidence-bar">
+                <div id="resConfBar" class="confidence-fill"></div>
+              </div>
+            </div>
+            <div style="margin-top:1rem;display:flex;gap:1rem;flex-wrap:wrap">
+              <div style="font-size:0.8rem"><span style="color:var(--text-muted)">Compat Probability:</span> <strong id="resProb"></strong></div>
+              <div style="font-size:0.8rem"><span style="color:var(--text-muted)">Predicted Error:</span> <span id="resError"></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== RECOMMEND TAB ===== -->
+    <section id="content-recommend" class="tab-content">
+      <div class="card">
+        <div class="card-title"><span class="icon">⭐</span> Version Recommender</div>
+        <p style="font-size:0.85rem;color:var(--text-secondary);margin-bottom:1rem">Find the best compatible versions of a package for your system.</p>
+        <div class="form-grid">
+          <div class="form-group">
+            <label for="recPkg">Package</label>
+            <select id="recPkg">
+              <option value="">Select package...</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="recPy">Python Version</label>
+            <select id="recPy">
+              <option value="3.12">Python 3.12</option>
+              <option value="3.11">Python 3.11</option>
+              <option value="3.10">Python 3.10</option>
+              <option value="3.9">Python 3.9</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="recPlat">Platform</label>
+            <select id="recPlat">
+              <option value="darwin_x86_64">macOS Intel (x86_64)</option>
+              <option value="darwin_arm64">macOS Apple Silicon</option>
+              <option value="linux_x86_64">Linux x86_64</option>
+              <option value="win_amd64">Windows x64</option>
+            </select>
+          </div>
+          <div class="form-group" style="justify-content:flex-end">
+            <button class="btn btn-primary" onclick="getRecommendations()" id="recBtn">⭐ Get Recommendations</button>
+          </div>
+        </div>
+
+        <div id="recResult" style="display:none">
+          <div style="display:flex;gap:1rem;margin:1rem 0;flex-wrap:wrap">
+            <div class="stat-card" style="flex:1;min-width:150px">
+              <div class="stat-label">Total Versions</div>
+              <div class="stat-value" id="recTotal" style="font-size:1.5rem"></div>
+            </div>
+            <div class="stat-card" style="flex:1;min-width:150px">
+              <div class="stat-label">Compatible</div>
+              <div class="stat-value" id="recCompat" style="font-size:1.5rem;color:var(--success)"></div>
+            </div>
+            <div class="stat-card" style="flex:1;min-width:150px">
+              <div class="stat-label">Incompatible</div>
+              <div class="stat-value" id="recIncompat" style="font-size:1.5rem;color:var(--danger)"></div>
+            </div>
+          </div>
+          <div style="overflow-x:auto">
+            <table class="rec-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Version</th>
+                  <th>Status</th>
+                  <th>Confidence</th>
+                  <th>Compat Prob.</th>
+                  <th>Error Type</th>
+                </tr>
+              </thead>
+              <tbody id="recTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== ANALYTICS TAB ===== -->
+    <section id="content-analytics" class="tab-content">
+      <div class="charts-grid">
+        <div class="card">
+          <div class="card-title"><span class="icon">🐍</span> Compatibility by Python Version</div>
+          <div class="chart-container"><canvas id="pyChart"></canvas></div>
+        </div>
+        <div class="card">
+          <div class="card-title"><span class="icon">⚠️</span> Error Type Distribution</div>
+          <div class="chart-container"><canvas id="errorChart"></canvas></div>
+        </div>
+      </div>
+      <div class="charts-grid" style="margin-top:0">
+        <div class="card">
+          <div class="card-title"><span class="icon">📈</span> Top Failing Packages</div>
+          <div class="chart-container"><canvas id="failChart"></canvas></div>
+        </div>
+        <div class="card">
+          <div class="card-title"><span class="icon">🏆</span> Model Feature Importance</div>
+          <div class="chart-container"><canvas id="featureChart"></canvas></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== PACKAGES TAB ===== -->
+    <section id="content-packages" class="tab-content">
+      <div class="card">
+        <div class="card-title"><span class="icon">📦</span> All Packages</div>
+        <div class="search-box">
+          <span class="search-icon">🔍</span>
+          <input type="text" id="pkgSearch" placeholder="Search packages..." oninput="filterPackages()">
+        </div>
+        <div class="pkg-grid" id="pkgGrid"></div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Toast Container -->
+  <div class="toast-container" id="toasts"></div>
+
+  <script>
+    const API = '';
+    let packagesData = {};
+    let statsData = null;
+    let charts = {};
+
+    // ---- Tab switching ----
+    function switchTab(tab) {
+      document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+      document.querySelectorAll('.nav-tab').forEach(el => el.classList.remove('active'));
+      document.getElementById('content-' + tab).classList.add('active');
+      document.getElementById('tab-' + tab).classList.add('active');
+      if (tab === 'analytics' && !charts.pyChart) loadAnalytics();
+      if (tab === 'packages' && !document.getElementById('pkgGrid').children.length) loadPackagesList();
+    }
+
+    // ---- Toast ----
+    function toast(msg, type = 'success') {
+      const el = document.createElement('div');
+      el.className = 'toast ' + type;
+      el.textContent = msg;
+      document.getElementById('toasts').appendChild(el);
+      setTimeout(() => el.remove(), 4000);
+    }
+
+    // ---- API helpers ----
+    async function apiFetch(endpoint, opts = {}) {
+      try {
+        const res = await fetch(API + endpoint, opts);
+        return await res.json();
+      } catch (e) {
+        console.error(e);
+        toast('API error: ' + e.message, 'error');
+        return null;
+      }
+    }
+
+    // ---- Init ----
+    async function init() {
+      const health = await apiFetch('/health');
+      const dot = document.getElementById('statusDot');
+      const txt = document.getElementById('statusText');
+      if (health && health.model_loaded) {
+        dot.classList.remove('offline');
+        txt.textContent = 'Model Ready';
+        txt.style.color = 'var(--success)';
+      } else {
+        dot.classList.add('offline');
+        txt.textContent = 'Model Not Loaded';
+        txt.style.color = 'var(--danger)';
+      }
+
+      // Load packages
+      const pkgData = await apiFetch('/packages');
+      if (pkgData) {
+        packagesData = pkgData.package_versions || {};
+        const pkgs = pkgData.packages || [];
+        populateSelect('predPkg', pkgs);
+        populateSelect('recPkg', pkgs);
+      }
+
+      // Load stats
+      const stats = await apiFetch('/stats');
+      if (stats) {
+        statsData = stats;
+        document.getElementById('totalPkgs').textContent = stats.overview.total_packages;
+        document.getElementById('totalTests').textContent = stats.overview.total_tests.toLocaleString();
+        document.getElementById('compatRate').textContent = stats.overview.overall_compatibility_rate + '%';
+        document.getElementById('compatSub').textContent = stats.overview.total_compatible.toLocaleString() + ' compatible';
+        if (stats.model_metrics && stats.model_metrics.compatibility) {
+          const m = stats.model_metrics.compatibility;
+          document.getElementById('modelAcc').textContent = (m.accuracy * 100).toFixed(1) + '%';
+          document.getElementById('modelF1').textContent = 'F1: ' + (m.f1_score * 100).toFixed(1) + '%';
+        }
+      }
+    }
+
+    function populateSelect(id, items) {
+      const sel = document.getElementById(id);
+      const first = sel.options[0];
+      sel.innerHTML = '';
+      sel.appendChild(first);
+      items.forEach(item => {
+        const opt = document.createElement('option');
+        opt.value = item;
+        opt.textContent = item;
+        sel.appendChild(opt);
+      });
+    }
+
+    function loadVersions(pkgSelectId, verSelectId) {
+      const pkg = document.getElementById(pkgSelectId).value;
+      const verSel = document.getElementById(verSelectId);
+      verSel.innerHTML = '<option value="">Select version...</option>';
+      if (pkg && packagesData[pkg]) {
+        const versions = [...packagesData[pkg]].reverse();
+        versions.forEach(v => {
+          const opt = document.createElement('option');
+          opt.value = v;
+          opt.textContent = v;
+          verSel.appendChild(opt);
+        });
+      }
+    }
+
+    // ---- Predict ----
+    async function predictCompatibility() {
+      const pkg = document.getElementById('predPkg').value;
+      const ver = document.getElementById('predVer').value;
+      const py = document.getElementById('predPy').value;
+      const plat = document.getElementById('predPlat').value;
+      if (!pkg || !ver || !py) { toast('Please fill all fields', 'error'); return; }
+
+      const btn = document.getElementById('predictBtn');
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span> Checking...';
+
+      const res = await apiFetch('/predict', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ package: pkg, version: ver, python_version: py, platform: plat })
+      });
+
+      btn.disabled = false;
+      btn.innerHTML = '🔍 Check Compatibility';
+
+      if (res && !res.error) {
+        const el = document.getElementById('predictResult');
+        el.style.display = 'block';
+        document.getElementById('resTitle').textContent = res.package + ' v' + res.version;
+        document.getElementById('resSubtitle').textContent = 'Python ' + res.python_version + ' • ' + res.platform;
+
+        const badge = document.getElementById('resBadge');
+        if (res.is_compatible) {
+          badge.innerHTML = '<span class="compat-badge compatible">✅ Compatible</span>';
+        } else {
+          badge.innerHTML = '<span class="compat-badge incompatible">❌ Incompatible</span>';
+        }
+
+        const conf = Math.round(res.confidence * 100);
+        document.getElementById('resConfidence').textContent = conf + '%';
+        const bar = document.getElementById('resConfBar');
+        bar.style.width = conf + '%';
+        bar.className = 'confidence-fill ' + (conf > 80 ? 'high' : conf > 50 ? 'medium' : 'low');
+
+        document.getElementById('resProb').textContent = (res.compatibility_probability * 100).toFixed(1) + '%';
+        const errEl = document.getElementById('resError');
+        const errType = res.predicted_error_type || 'none';
+        errEl.innerHTML = '<span class="error-tag ' + errType + '">' + errType.replace('_', ' ') + '</span>';
+      }
+    }
+
+    // ---- Recommend ----
+    async function getRecommendations() {
+      const pkg = document.getElementById('recPkg').value;
+      const py = document.getElementById('recPy').value;
+      const plat = document.getElementById('recPlat').value;
+      if (!pkg || !py) { toast('Select a package and Python version', 'error'); return; }
+
+      const btn = document.getElementById('recBtn');
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span> Analyzing...';
+
+      const res = await apiFetch('/recommend', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ package: pkg, python_version: py, platform: plat, top_n: 50 })
+      });
+
+      btn.disabled = false;
+      btn.innerHTML = '⭐ Get Recommendations';
+
+      if (res && !res.error) {
+        document.getElementById('recResult').style.display = 'block';
+        document.getElementById('recTotal').textContent = res.total_versions;
+        document.getElementById('recCompat').textContent = res.compatible_count;
+        document.getElementById('recIncompat').textContent = res.total_versions - res.compatible_count;
+
+        const tbody = document.getElementById('recTableBody');
+        tbody.innerHTML = '';
+        const items = res.all_results || res.recommendations || [];
+        items.forEach((r, i) => {
+          const tr = document.createElement('tr');
+          const confPct = Math.round(r.confidence * 100);
+          const probPct = (r.compatibility_probability * 100).toFixed(1);
+          const errType = r.predicted_error_type || 'none';
+          tr.innerHTML = `
+            <td style="color:var(--text-muted)">${i + 1}</td>
+            <td><span class="version-tag">${r.version}</span></td>
+            <td>${r.is_compatible ? '<span class="compat-badge compatible" style="font-size:0.75rem;padding:0.2rem 0.6rem">✅ OK</span>' : '<span class="compat-badge incompatible" style="font-size:0.75rem;padding:0.2rem 0.6rem">❌ Fail</span>'}</td>
+            <td>
+              <div style="display:flex;align-items:center;gap:0.5rem">
+                <div class="confidence-bar" style="width:60px"><div class="confidence-fill ${confPct > 80 ? 'high' : confPct > 50 ? 'medium' : 'low'}" style="width:${confPct}%"></div></div>
+                <span style="font-size:0.8rem">${confPct}%</span>
+              </div>
+            </td>
+            <td style="font-size:0.85rem">${probPct}%</td>
+            <td><span class="error-tag ${errType}">${errType.replace('_', ' ')}</span></td>
+          `;
+          tbody.appendChild(tr);
+        });
+      }
+    }
+
+    // ---- Analytics ----
+    async function loadAnalytics() {
+      if (!statsData) {
+        const stats = await apiFetch('/stats');
+        if (stats) statsData = stats;
+        else return;
+      }
+
+      const chartDefaults = {
+        color: '#9ca3af',
+        borderColor: 'rgba(255,255,255,0.08)',
+      };
+      Chart.defaults.color = chartDefaults.color;
+      Chart.defaults.borderColor = chartDefaults.borderColor;
+
+      // Python version chart
+      const pyStats = statsData.python_version_stats || {};
+      const pyLabels = Object.keys(pyStats).sort();
+      const pyRates = pyLabels.map(k => pyStats[k].rate);
+      charts.pyChart = new Chart(document.getElementById('pyChart'), {
+        type: 'bar',
+        data: {
+          labels: pyLabels.map(v => 'Python ' + v),
+          datasets: [{
+            label: 'Compatibility %',
+            data: pyRates,
+            backgroundColor: ['#6366f1', '#8b5cf6', '#a78bfa', '#c4b5fd'],
+            borderRadius: 8,
+            borderSkipped: false,
+          }]
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: { y: { beginAtZero: true, max: 100, ticks: { callback: v => v + '%' } } }
+        }
+      });
+
+      // Error chart
+      const errors = statsData.error_breakdown || {};
+      const errLabels = Object.keys(errors).filter(e => e !== 'none');
+      const errValues = errLabels.map(e => errors[e]);
+      charts.errorChart = new Chart(document.getElementById('errorChart'), {
+        type: 'doughnut',
+        data: {
+          labels: errLabels.map(e => e.replace('_', ' ')),
+          datasets: [{
+            data: errValues,
+            backgroundColor: ['#ef4444', '#f59e0b', '#3b82f6', '#6b7280', '#8b5cf6'],
+            borderWidth: 0,
+          }]
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { position: 'right', labels: { padding: 15 } } }
+        }
+      });
+
+      // Failing packages chart
+      const pkgStats = statsData.package_stats || {};
+      const failPkgs = Object.entries(pkgStats)
+        .filter(([, s]) => s.compatibility_rate < 100)
+        .sort((a, b) => a[1].compatibility_rate - b[1].compatibility_rate)
+        .slice(0, 10);
+      charts.failChart = new Chart(document.getElementById('failChart'), {
+        type: 'bar',
+        data: {
+          labels: failPkgs.map(([n]) => n),
+          datasets: [{
+            label: 'Compat %',
+            data: failPkgs.map(([, s]) => s.compatibility_rate),
+            backgroundColor: failPkgs.map(([, s]) => s.compatibility_rate < 30 ? '#ef4444' : s.compatibility_rate < 70 ? '#f59e0b' : '#10b981'),
+            borderRadius: 6,
+            borderSkipped: false,
+          }]
+        },
+        options: {
+          indexAxis: 'y',
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: { x: { beginAtZero: true, max: 100, ticks: { callback: v => v + '%' } } }
+        }
+      });
+
+      // Feature importance
+      const fi = statsData.model_metrics?.compatibility?.feature_importances;
+      if (fi) {
+        const fiEntries = Object.entries(fi).sort((a, b) => b[1] - a[1]);
+        charts.featureChart = new Chart(document.getElementById('featureChart'), {
+          type: 'bar',
+          data: {
+            labels: fiEntries.map(([k]) => k.replace('_', ' ')),
+            datasets: [{
+              label: 'Importance',
+              data: fiEntries.map(([, v]) => v),
+              backgroundColor: '#8b5cf6',
+              borderRadius: 6,
+              borderSkipped: false,
+            }]
+          },
+          options: {
+            indexAxis: 'y',
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: { x: { beginAtZero: true } }
+          }
+        });
+      }
+    }
+
+    // ---- Packages list ----
+    async function loadPackagesList() {
+      if (!statsData) {
+        const stats = await apiFetch('/stats');
+        if (stats) statsData = stats;
+        else return;
+      }
+      renderPackages(statsData.package_stats || {});
+    }
+
+    function renderPackages(pkgStats) {
+      const grid = document.getElementById('pkgGrid');
+      grid.innerHTML = '';
+      const search = (document.getElementById('pkgSearch').value || '').toLowerCase();
+      const entries = Object.entries(pkgStats)
+        .filter(([name]) => name.includes(search))
+        .sort((a, b) => a[0].localeCompare(b[0]));
+
+      entries.forEach(([name, s]) => {
+        const div = document.createElement('div');
+        div.className = 'pkg-item';
+        const rate = s.compatibility_rate;
+        const cls = rate >= 90 ? 'good' : rate >= 50 ? 'warn' : 'bad';
+        div.innerHTML = `
+          <div>
+            <div class="pkg-name">${name}</div>
+            <div style="font-size:0.72rem;color:var(--text-muted)">${s.num_versions} versions • ${s.total_tests} tests</div>
+          </div>
+          <span class="pkg-rate ${cls}">${rate}%</span>
+        `;
+        div.onclick = () => {
+          document.getElementById('recPkg').value = name;
+          switchTab('recommend');
+        };
+        grid.appendChild(div);
+      });
+    }
+
+    function filterPackages() {
+      if (statsData) renderPackages(statsData.package_stats || {});
+    }
+
+    // ---- Retrain ----
+    async function retrain() {
+      const btn = document.getElementById('retrainBtn');
+      btn.disabled = true;
+      btn.textContent = '⏳ Training...';
+      const res = await apiFetch('/retrain', { method: 'POST' });
+      btn.disabled = false;
+      btn.textContent = '🔄 Retrain';
+      if (res && res.status === 'success') {
+        toast('Models retrained successfully!');
+        init();
+      } else {
+        toast('Retrain failed', 'error');
+      }
+    }
+
+    // ---- Boot ----
+    init();
+  </script>
+</body>
+</html>
