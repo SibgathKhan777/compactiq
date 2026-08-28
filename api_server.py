@@ -23,6 +23,7 @@ import argparse
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from pycompat_model import PyCompatModel
+from validate import validate_install_code
 
 app = Flask(__name__)
 CORS(app)
@@ -108,6 +109,37 @@ def recommend():
     return jsonify({"recommendations": recs, "package": pkg, "python_version": pyver})
 
 
+@app.route("/api/validate", methods=["POST"])
+def validate():
+    """
+    Validate (and if needed, correct) LLM-generated `pip install` code -- the
+    same contract as the middleware repo's /api/validate-llm-code, built from
+    this repo's own ML model + live PyPI verification + joint dependency
+    checking, with no Docker and no LLM call involved.
+
+    Request body:
+        { "code": "pip install torch==2.8.0 torchvision==0.17.0",
+          "python_version": "3.12", "platform": "darwin_x86_64",
+          "live": true }
+
+    Response:
+        { "original_code": ..., "corrected_code": ..., "risk_score": ...,
+          "joint_dependency_conflicts": [...], "packages": [...] }
+    """
+    data = request.get_json()
+    if not data or "code" not in data:
+        return jsonify({"error": "JSON body with 'code' required"}), 400
+
+    result = validate_install_code(
+        data["code"],
+        python_version=data.get("python_version", "3.12"),
+        platform=data.get("platform", "darwin_x86_64"),
+        model=model,
+        live=data.get("live", True),
+    )
+    return jsonify(result)
+
+
 @app.route("/api/packages", methods=["GET"])
 def packages():
     """List all known packages and their versions."""
@@ -150,6 +182,7 @@ def main():
     print(f"   POST /api/predict        — Single prediction")
     print(f"   POST /api/predict/batch   — Batch predictions")
     print(f"   POST /api/recommend       — Version recommendations")
+    print(f"   POST /api/validate        — Validate + auto-correct pip install code")
     print(f"   GET  /api/packages        — List packages")
     print(f"   GET  /api/info            — Model info")
     print(f"   GET  /api/health          — Health check\n")

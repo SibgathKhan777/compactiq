@@ -17,6 +17,7 @@ import re
 import pickle
 import numpy as np
 import joblib
+from packaging.utils import canonicalize_name
 
 
 class PyCompatModel:
@@ -58,9 +59,14 @@ class PyCompatModel:
         df = pd.DataFrame(raw_data)
         print(f"📦 Loaded {len(df)} records, {df['package'].nunique()} packages")
 
-        # Store known package versions for recommendations
+        # Store known package versions for recommendations. Keyed by PEP 503
+        # canonical name (lowercase, "-" for "_"/"."), NOT the raw string in
+        # data.json, which is inconsistently cased (e.g. "sqlalchemy" lowercase
+        # while PyPI's canonical display name and other packages' requires_dist
+        # entries say "SQLAlchemy") -- without this, a query using PyPI's own
+        # casing would be wrongly treated as an unknown/novel package.
         for pkg in df["package"].unique():
-            self.package_versions[pkg] = sorted(
+            self.package_versions[canonicalize_name(pkg)] = sorted(
                 df[df["package"] == pkg]["version"].unique().tolist()
             )
 
@@ -136,15 +142,18 @@ class PyCompatModel:
         # Python version as float
         df["python_version_num"] = df["python_version"].astype(float)
 
-        # Encode categoricals
+        # Encode categoricals. package_map is keyed by PEP 503 canonical name so
+        # lookups at prediction time aren't case/separator sensitive (data.json has
+        # e.g. "sqlalchemy" while PyPI's canonical name is "SQLAlchemy").
+        canonical_packages = sorted(set(canonicalize_name(p) for p in df["package"].unique()))
         self.mappings = {
-            "package_map": {pkg: i for i, pkg in enumerate(sorted(df["package"].unique()))},
+            "package_map": {pkg: i for i, pkg in enumerate(canonical_packages)},
             "platform_map": {p: i for i, p in enumerate(sorted(df["platform"].unique()))},
             "error_map": {e: i for i, e in enumerate(sorted(df["error_type"].unique()))},
         }
         self.mappings["reverse_error_map"] = {v: k for k, v in self.mappings["error_map"].items()}
 
-        df["package_encoded"] = df["package"].map(self.mappings["package_map"])
+        df["package_encoded"] = df["package"].apply(lambda p: self.mappings["package_map"][canonicalize_name(p)])
         df["platform_encoded"] = df["platform"].map(self.mappings["platform_map"])
         df["error_type_encoded"] = df["error_type"].map(self.mappings["error_map"])
 
@@ -197,11 +206,18 @@ class PyCompatModel:
 
         Returns:
             dict with is_compatible, confidence, predicted_error_type, etc.
+            Also includes `is_known_package` / `is_known_platform` / `is_known_version`
+            and a `reliability` flag. When any of those are False, the prediction is an
+            extrapolation the model has no real signal for -- package-holdout evaluation
+            (see eval_temporal_holdout.py) shows accuracy on entirely unseen packages
+            (87.5%) is *below* the majority-class baseline (89.3%) for that split, i.e.
+            worse than always guessing "compatible". Treat `reliability: "low"` as
+            "verify this one live" rather than as a real prediction.
         """
         if self.compat_model is None:
             raise RuntimeError("Model not loaded. Call load() or train_from_data() first.")
 
-        features = self._build_features(package, version, python_version, platform)
+        features, novelty = self._build_features(package, version, python_version, platform)
 
         compat_pred = self.compat_model.predict(features)[0]
         compat_proba = self.compat_model.predict_proba(features)[0]
@@ -214,6 +230,8 @@ class PyCompatModel:
             # JSON converts int keys to strings, so check both
             error_pred = rev_map.get(err_enc, rev_map.get(str(err_enc), "unknown"))
 
+        is_reliable = novelty["is_known_package"] and novelty["is_known_platform"]
+
         return {
             "package": package,
             "version": version,
@@ -225,6 +243,10 @@ class PyCompatModel:
                 float(compat_proba[1]) if len(compat_proba) > 1 else float(compat_proba[0]), 4
             ),
             "predicted_error_type": error_pred if not compat_pred else "none",
+            "is_known_package": novelty["is_known_package"],
+            "is_known_platform": novelty["is_known_platform"],
+            "is_known_version": novelty["is_known_version"],
+            "reliability": "high" if is_reliable else "low",
         }
 
     def recommend(self, package, python_version, platform="darwin_x86_64", top_n=5):
@@ -240,7 +262,7 @@ class PyCompatModel:
         Returns:
             list of dicts sorted by compatibility probability (descending)
         """
-        versions = self.package_versions.get(package, [])
+        versions = self.package_versions.get(canonicalize_name(package), [])
         if not versions:
             return []
 
@@ -271,22 +293,33 @@ class PyCompatModel:
         ]
 
     def _build_features(self, package, version, python_version, platform):
-        pkg_enc = self.mappings["package_map"].get(package, len(self.mappings["package_map"]) // 2)
+        canon_pkg = canonicalize_name(package)
+        is_known_package = canon_pkg in self.mappings["package_map"]
+        is_known_platform = platform in self.mappings["platform_map"]
+
+        pkg_enc = self.mappings["package_map"].get(canon_pkg, len(self.mappings["package_map"]) // 2)
         plat_enc = self.mappings["platform_map"].get(platform, 0)
         major, minor, patch = self._parse_version(version)
         py_ver = float(python_version)
 
         # Version recency
         recency = 0.5
-        versions = self.package_versions.get(package, [])
-        if versions and version in versions:
+        versions = self.package_versions.get(canon_pkg, [])
+        is_known_version = version in versions
+        if versions and is_known_version:
             idx = versions.index(version)
             recency = idx / max(len(versions) - 1, 1)
 
-        return np.array([[
+        features = np.array([[
             pkg_enc, major, minor, patch, py_ver, plat_enc,
             recency, len(package), 1 if "-" in package else 0
         ]])
+        novelty = {
+            "is_known_package": is_known_package,
+            "is_known_platform": is_known_platform,
+            "is_known_version": is_known_version,
+        }
+        return features, novelty
 
     # ─── Save / Load ────────────────────────────────────────────
 

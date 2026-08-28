@@ -99,8 +99,62 @@ When the API is running, the following REST endpoints are available:
 - `POST /api/predict` — Check compatibility for a specific package version.
 - `POST /api/predict/batch` — Send an array of configurations to test at once.
 - `POST /api/recommend` — Pass a package and Python version to get a ranked list of versions.
+- `POST /api/validate` — Validate (and auto-correct) a whole `pip install` line: ML prediction + live PyPI verification + joint dependency conflict checking across every package, with a risk score and explanation. See below.
 - `GET /api/info` — Fetch model metrics and accuracy stats.
 - `GET /api/packages` — Browse the list of supported pip packages.
+
+### `POST /api/validate`
+
+Validates every `package==version` pin in a snippet of `pip install` code — not just individually, but against each other (do the pinned versions violate each other's declared dependencies?) and against live PyPI (does the version actually exist, does a wheel exist for this platform/Python combo?). Returns a risk score, a plain-language explanation, and a corrected install line.
+
+```bash
+curl -X POST http://localhost:8080/api/validate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "code": "pip install alembic==1.18.4 SQLAlchemy==1.0.0",
+    "python_version": "3.12",
+    "platform": "darwin_x86_64"
+  }'
+```
+
+```json
+{
+  "original_code": "pip install alembic==1.18.4 SQLAlchemy==1.0.0",
+  "corrected_code": "pip install alembic==1.18.4 SQLAlchemy==2.0.42",
+  "changed": true,
+  "risk_score": 1.0,
+  "joint_dependency_conflicts": [
+    {
+      "from_package": "alembic",
+      "depends_on": "SQLAlchemy",
+      "required_specifier": ">=1.4.23",
+      "pinned_version": "1.0.0",
+      "satisfied": false
+    }
+  ],
+  "packages": [ { "package": "alembic", "is_clean": true, "..." : "..." },
+                { "package": "SQLAlchemy", "is_clean": false, "explanation": "...", "..." : "..." } ]
+}
+```
+
+Set `"live": false` in the request body to skip the live PyPI calls and get an ML-only response (useful offline).
+
+### Standalone modules behind `/api/validate`
+
+These can also be run directly, without the API server:
+
+- `live_verify.py` — checks a package/version against PyPI right now (does it exist, is there a wheel for this platform + Python version). Fills the gap where the trained model can only reflect what was true in `data.json` at training time.
+  ```bash
+  python live_verify.py boto3 1.42.49 3.12 darwin_x86_64
+  ```
+- `dependency_conflicts.py` — checks a batch of pinned packages against each other's real PyPI-declared `requires_dist`, catching cross-package conflicts a single-package classifier can't see.
+  ```bash
+  python dependency_conflicts.py 3.12 alembic 1.18.4 SQLAlchemy 1.0.0
+  ```
+- `eval_temporal_holdout.py` — evaluates the model on packages/versions it was never trained on (instead of the random 80/20 split), to measure real-world generalization rather than in-distribution fit.
+  ```bash
+  python eval_temporal_holdout.py data.json
+  ```
 
 ## 🤝 Contributing
 Contributions are welcome. Please ensure that modifying the dataset (`data.json`) triggers a successful retraining. By default, `app.py` actively monitors `data.json` and automatically retrains the model in the background when changes are detected!

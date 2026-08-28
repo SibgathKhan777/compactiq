@@ -8,12 +8,21 @@ import json
 import re
 import joblib
 import numpy as np
+from packaging.utils import canonicalize_name
 
-MODEL_DIR = os.path.dirname(__file__)
+REPO_DIR = os.path.dirname(__file__)
+# The actual trained model lives in model/ (written by pycompat_model.py's
+# PyCompatModel.save(), which is what api_server.py serves). This module used to
+# point at REPO_DIR itself, which has no model files -- CompatibilityPredictor()
+# raised FileNotFoundError unconditionally and the dashboard (app.py) that depends
+# on it never actually worked. Pointing both prediction surfaces at the same model
+# directory also avoids a second, independently-trained model silently drifting
+# from what the API serves for the same query.
+MODEL_DIR = os.path.join(REPO_DIR, "model")
 COMPAT_MODEL_FILE = os.path.join(MODEL_DIR, "compat_model.joblib")
 ERROR_MODEL_FILE = os.path.join(MODEL_DIR, "error_model.joblib")
-MAPPINGS_FILE = os.path.join(MODEL_DIR, "mappings.joblib")
-DATA_FILE = os.path.join(MODEL_DIR, "data.json")
+CONFIG_FILE = os.path.join(MODEL_DIR, "config.json")
+DATA_FILE = os.path.join(REPO_DIR, "data.json")
 
 
 def parse_version(version_str):
@@ -37,16 +46,19 @@ class CompatibilityPredictor:
         self._load_data()
 
     def _load_models(self):
-        """Load trained models and mappings."""
+        """Load trained models and mappings from model/ (PyCompatModel's format)."""
         if os.path.exists(COMPAT_MODEL_FILE):
             self.compat_model = joblib.load(COMPAT_MODEL_FILE)
         if os.path.exists(ERROR_MODEL_FILE):
             self.error_model = joblib.load(ERROR_MODEL_FILE)
-        if os.path.exists(MAPPINGS_FILE):
-            self.mappings = joblib.load(MAPPINGS_FILE)
-        if self.compat_model is None:
+        if os.path.exists(CONFIG_FILE):
+            with open(CONFIG_FILE, "r") as f:
+                config = json.load(f)
+            self.mappings = config.get("mappings")
+        if self.compat_model is None or self.mappings is None:
             raise FileNotFoundError(
-                "Models not found. Run train_model.py first."
+                f"Models not found in {MODEL_DIR}. Train them first with: "
+                f"python pycompat_model.py train data.json {MODEL_DIR}"
             )
 
     def _load_data(self):
@@ -60,8 +72,15 @@ class CompatibilityPredictor:
         pkg_map = self.mappings["package_map"]
         plat_map = self.mappings["platform_map"]
 
+        # package_map is keyed by PEP 503 canonical name (see pycompat_model.py) so
+        # a query using PyPI's own casing (e.g. "SQLAlchemy") isn't wrongly treated
+        # as a novel package just because data.json stores it as "sqlalchemy".
+        canon_pkg = canonicalize_name(package)
+        is_known_package = canon_pkg in pkg_map
+        is_known_platform = platform in plat_map
+
         # Handle unknown packages/platforms
-        pkg_encoded = pkg_map.get(package, -1)
+        pkg_encoded = pkg_map.get(canon_pkg, -1)
         plat_encoded = plat_map.get(platform, -1)
 
         if pkg_encoded == -1:
@@ -76,22 +95,24 @@ class CompatibilityPredictor:
 
         # Version recency (approximate for new queries)
         version_recency = 0.5  # default mid-range
+        is_known_version = False
         if self.data:
             pkg_versions = [
                 r["version"]
                 for r in self.data
-                if r["package"] == package
+                if canonicalize_name(r["package"]) == canon_pkg
             ]
             if pkg_versions:
                 unique_versions = sorted(set(pkg_versions))
                 if version in unique_versions:
+                    is_known_version = True
                     idx = unique_versions.index(version)
                     version_recency = idx / max(len(unique_versions) - 1, 1)
 
         pkg_name_len = len(package)
         pkg_has_hyphen = 1 if "-" in package else 0
 
-        return np.array(
+        features = np.array(
             [
                 [
                     pkg_encoded,
@@ -106,13 +127,19 @@ class CompatibilityPredictor:
                 ]
             ]
         )
+        novelty = {
+            "is_known_package": is_known_package,
+            "is_known_platform": is_known_platform,
+            "is_known_version": is_known_version,
+        }
+        return features, novelty
 
     def predict_compatibility(self, package, version, python_version, platform="darwin_x86_64"):
         """
         Predict compatibility for a specific package+version+system.
         Returns dict with prediction, confidence, and predicted error type.
         """
-        features = self._build_features(package, version, python_version, platform)
+        features, novelty = self._build_features(package, version, python_version, platform)
 
         # Compatibility prediction
         compat_pred = self.compat_model.predict(features)[0]
@@ -124,7 +151,11 @@ class CompatibilityPredictor:
         if self.error_model is not None:
             error_encoded = self.error_model.predict(features)[0]
             reverse_error = self.mappings.get("reverse_error_map", {})
-            error_pred = reverse_error.get(error_encoded, "unknown")
+            # config.json round-trips through JSON, which stringifies dict keys,
+            # so an int key from .predict() won't match unless we also try str().
+            error_pred = reverse_error.get(error_encoded, reverse_error.get(str(error_encoded), "unknown"))
+
+        is_reliable = novelty["is_known_package"] and novelty["is_known_platform"]
 
         return {
             "package": package,
@@ -135,6 +166,10 @@ class CompatibilityPredictor:
             "confidence": round(confidence, 4),
             "compatibility_probability": round(float(compat_proba[1]) if len(compat_proba) > 1 else float(compat_proba[0]), 4),
             "predicted_error_type": error_pred if not compat_pred else "none",
+            "is_known_package": novelty["is_known_package"],
+            "is_known_platform": novelty["is_known_platform"],
+            "is_known_version": novelty["is_known_version"],
+            "reliability": "high" if is_reliable else "low",
         }
 
     def recommend_best_versions(self, package, python_version, platform="darwin_x86_64", top_n=5):
@@ -146,8 +181,9 @@ class CompatibilityPredictor:
             return []
 
         # Get all known versions for this package
+        canon_pkg = canonicalize_name(package)
         versions = sorted(
-            set(r["version"] for r in self.data if r["package"] == package)
+            set(r["version"] for r in self.data if canonicalize_name(r["package"]) == canon_pkg)
         )
 
         if not versions:
@@ -225,7 +261,8 @@ class CompatibilityPredictor:
     def get_versions_for_package(self, package):
         """Return all known versions for a package."""
         if self.data:
-            return sorted(set(r["version"] for r in self.data if r["package"] == package))
+            canon_pkg = canonicalize_name(package)
+            return sorted(set(r["version"] for r in self.data if canonicalize_name(r["package"]) == canon_pkg))
         return []
 
 
