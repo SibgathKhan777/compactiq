@@ -20,7 +20,7 @@ model-index:
         metrics:
           - name: Accuracy
             type: accuracy
-            value: 0.9708
+            value: 0.9709
           - name: F1 Score
             type: f1
             value: 0.97
@@ -34,17 +34,17 @@ AI model that predicts whether a Python package version is compatible with a giv
 ## Model Details
 
 - **Model Type:** Random Forest (compatibility) + Gradient Boosting (error type)
-- **Training Data:** 5484 compatibility test records
+- **Training Data:** 5504 compatibility test records
 - **Packages:** 198 unique packages
 - **Python Versions:** 3.10, 3.11, 3.12, 3.9
-- **Platforms:** darwin_x86_64
+- **Platforms:** darwin_x86_64, linux_x86_64
 
 ## Performance
 
 | Model | Accuracy | F1 Score |
 |-------|----------|----------|
-| Compatibility | 0.9708 | 0.97 |
-| Error Type | 0.9836 | 0.9826 |
+| Compatibility | 0.9709 | 0.97 |
+| Error Type | 0.9791 | 0.9772 |
 
 ## Usage
 

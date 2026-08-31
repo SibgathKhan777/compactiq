@@ -34,6 +34,7 @@
     <button class="nav-tab" onclick="switchTab('recommend')" id="tab-recommend">⭐ Recommend</button>
     <button class="nav-tab" onclick="switchTab('analytics')" id="tab-analytics">📊 Analytics</button>
     <button class="nav-tab" onclick="switchTab('packages')" id="tab-packages">📦 Packages</button>
+    <button class="nav-tab" onclick="switchTab('deploy')" id="tab-deploy">🚀 Deploy Check</button>
   </nav>
 
   <!-- Main Content -->
@@ -107,6 +108,26 @@
               <div style="font-size:0.8rem"><span style="color:var(--text-muted)">Predicted Error:</span> <span id="resError"></span></div>
             </div>
           </div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:1.5rem">
+        <div class="card-title"><span class="icon">💬</span> Dependency Assistant</div>
+        <p style="font-size:0.85rem;color:var(--text-secondary);margin-bottom:1rem">
+          Paste a <code>pip install ...</code> line -- like one an LLM just handed you -- and I'll check every
+          pin against this host's hardware, live PyPI, the trained model, and each package's declared
+          dependencies. I'll return it unchanged if it's fine, or a corrected version with an explanation if not.
+        </p>
+
+        <div class="chat-host-line" id="chatHostLine">Detecting host...</div>
+
+        <div class="chat-log" id="chatLog">
+          <div class="chat-bubble assistant">👋 Tell me what you're installing. Example: <code>pip install torch==2.8.0 torchvision==0.17.0</code></div>
+        </div>
+
+        <div class="chat-input-row">
+          <textarea id="chatInput" placeholder="pip install torch==2.8.0 torchvision==0.17.0" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat();}"></textarea>
+          <button class="btn btn-primary" onclick="sendChat()" id="chatSendBtn">Send</button>
         </div>
       </div>
     </section>
@@ -216,6 +237,61 @@
       </div>
     </section>
 
+    <!-- ===== DEPLOY CHECK TAB ===== -->
+    <section id="content-deploy" class="tab-content">
+      <div class="card">
+        <div class="card-title"><span class="icon">🚀</span> Deployment Compatibility Checker</div>
+        <p style="font-size:0.85rem;color:var(--text-secondary);margin-bottom:1rem">
+          Paste the packages that work on your local machine (a <code>pip install ...</code> line, or a full
+          <code>requirements.txt</code> from <code>pip freeze</code>) and check them against a real deployment
+          target. Catches the classic "works on my machine" gap -- missing wheels, OS-only packages like
+          <code>pywin32</code>, and Intel/ARM architecture mismatches -- before you actually deploy.
+        </p>
+
+        <div class="form-group">
+          <label for="deployCode">Local packages</label>
+          <textarea id="deployCode" rows="6" placeholder="boto3==1.42.49&#10;requests==2.32.5&#10;pywin32==308"
+            style="width:100%;resize:vertical;background:var(--bg-glass);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);padding:0.75rem;font-family:inherit;font-size:0.85rem"></textarea>
+        </div>
+
+        <div class="form-grid">
+          <div class="form-group">
+            <label for="deployLocalPlatform">Your local machine</label>
+            <select id="deployLocalPlatform">
+              <option value="darwin_x86_64">macOS Intel (x86_64)</option>
+              <option value="darwin_arm64">macOS Apple Silicon</option>
+              <option value="linux_x86_64">Linux x86_64</option>
+              <option value="win_amd64">Windows x64</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="deployPy">Python Version</label>
+            <select id="deployPy">
+              <option value="3.12">Python 3.12</option>
+              <option value="3.11">Python 3.11</option>
+              <option value="3.10">Python 3.10</option>
+              <option value="3.9">Python 3.9</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="deployTarget">Deploy target</label>
+            <select id="deployTarget">
+              <option value="linux_x86_64">AWS EC2 (x86_64, standard/Amazon Linux)</option>
+              <option value="linux_aarch64">AWS EC2 Graviton (ARM64)</option>
+              <option value="linux_x86_64">Azure VM (x86_64)</option>
+              <option value="linux_x86_64">Google Compute Engine (x86_64)</option>
+              <option value="linux_x86_64">Docker (linux/amd64)</option>
+              <option value="linux_aarch64">Docker (linux/arm64)</option>
+              <option value="win_amd64">Windows Server</option>
+            </select>
+          </div>
+        </div>
+        <button class="btn btn-primary" onclick="checkDeploy()" id="deployBtn">🚀 Check Deploy Compatibility</button>
+
+        <div id="deployResult" style="display:none;margin-top:1.5rem"></div>
+      </div>
+    </section>
+
   </main>
 
   <!-- Toast Container -->
@@ -295,6 +371,18 @@
           document.getElementById('modelAcc').textContent = (m.accuracy * 100).toFixed(1) + '%';
           document.getElementById('modelF1').textContent = 'F1: ' + (m.f1_score * 100).toFixed(1) + '%';
         }
+      }
+
+      // Detect host for the Dependency Assistant
+      const hostProfile = await apiFetch('/host');
+      const hostLine = document.getElementById('chatHostLine');
+      if (hostProfile) {
+        let gpu = 'no dedicated GPU detected';
+        if (hostProfile.cuda && hostProfile.cuda.available) gpu = 'NVIDIA GPU: ' + hostProfile.cuda.detail;
+        else if (hostProfile.apple_metal && hostProfile.apple_metal.available) gpu = hostProfile.apple_metal.detail;
+        hostLine.textContent = `🖥️ Detected host: ${hostProfile.os} (${hostProfile.arch}) • Python ${hostProfile.python_version} • ${gpu}`;
+      } else {
+        hostLine.textContent = 'Could not detect host (API unreachable)';
       }
     }
 
@@ -423,6 +511,96 @@
           tbody.appendChild(tr);
         });
       }
+    }
+
+    // ---- Deploy Check ----
+    async function checkDeploy() {
+      const code = document.getElementById('deployCode').value.trim();
+      if (!code) { toast('Paste your local packages first', 'error'); return; }
+
+      const localPlatform = document.getElementById('deployLocalPlatform').value;
+      const py = document.getElementById('deployPy').value;
+      const deploySelect = document.getElementById('deployTarget');
+      const deployPlatform = deploySelect.value;
+      const deployLabel = deploySelect.options[deploySelect.selectedIndex].text;
+
+      const btn = document.getElementById('deployBtn');
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span> Checking...';
+
+      const res = await apiFetch('/deploy-check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          code, python_version: py,
+          local_platform: localPlatform, deploy_platform: deployPlatform,
+        })
+      });
+
+      btn.disabled = false;
+      btn.innerHTML = '🚀 Check Deploy Compatibility';
+
+      if (!res || res.error) {
+        toast(res ? res.error : 'Check failed', 'error');
+        return;
+      }
+      renderDeployResult(res, deployLabel);
+    }
+
+    function renderDeployResult(res, deployLabel) {
+      const el = document.getElementById('deployResult');
+      el.style.display = 'block';
+      const safe = res.safe_to_deploy;
+      const alreadyBroken = res.already_broken || [];
+      const totalIssues = res.regressions.length + alreadyBroken.length;
+
+      let html = `<div class="card" style="border-color:${safe ? 'var(--success)' : 'var(--danger)'}">`;
+      html += `<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0.5rem">
+        <div style="font-size:1.05rem;font-weight:600">${safe ? '✅ Safe to deploy' : '⚠️ ' + totalIssues + ' issue(s) found'}</div>
+        <div style="font-size:0.8rem;color:var(--text-muted)">${deployLabel}</div>
+      </div>`;
+
+      if (res.regressions.length) {
+        html += '<div style="margin-top:1rem;font-size:0.78rem;color:var(--text-muted)">Works locally, breaks specifically on deploy:</div>';
+        html += '<div style="margin-top:0.5rem;display:flex;flex-direction:column;gap:0.6rem">';
+        res.regressions.forEach(r => {
+          const sevColor = r.severity === 'hard_fail' ? 'var(--danger)' : 'var(--warning)';
+          const sevLabel = r.severity === 'hard_fail' ? 'WILL FAIL' : 'FLAGGED';
+          html += `<div style="padding:0.75rem;background:var(--bg-glass);border-radius:var(--radius-sm);border-left:3px solid ${sevColor}">
+            <div style="font-weight:600;font-size:0.9rem">${r.package}==${r.version}
+              <span style="font-size:0.7rem;font-weight:700;color:${sevColor};margin-left:0.5rem">${sevLabel}</span>
+            </div>
+            <div style="font-size:0.82rem;color:var(--text-secondary);margin-top:0.3rem">${r.reason}</div>
+          </div>`;
+        });
+        html += '</div>';
+      }
+
+      if (alreadyBroken.length) {
+        html += '<div style="margin-top:1rem;font-size:0.78rem;color:var(--text-muted)">Not safe on EITHER platform as pinned (not deploy-specific):</div>';
+        html += '<div style="margin-top:0.5rem;display:flex;flex-direction:column;gap:0.6rem">';
+        alreadyBroken.forEach(b => {
+          html += `<div style="padding:0.75rem;background:var(--bg-glass);border-radius:var(--radius-sm);border-left:3px solid var(--warning)">
+            <div style="font-weight:600;font-size:0.9rem">${b.package}==${b.requested_version} → ${b.deploy_corrected_to}
+              <span style="font-size:0.7rem;font-weight:700;color:var(--warning);margin-left:0.5rem">INVALID PIN</span>
+            </div>
+            <div style="font-size:0.82rem;color:var(--text-secondary);margin-top:0.3rem">${b.reason}</div>
+          </div>`;
+        });
+        html += '</div>';
+      }
+
+      const stillUnresolved = (res.deploy.packages || []).filter(p => !p.is_clean).map(p => p.package);
+      const codeLabel = stillUnresolved.length
+        ? `⚠️ Best attempt -- NOT fully resolved (${stillUnresolved.join(', ')} still won't work, no fix exists):`
+        : 'Deploy-target-compatible packages:';
+      html += `<div style="margin-top:1rem">
+        <div style="font-size:0.78rem;color:${stillUnresolved.length ? 'var(--warning)' : 'var(--text-muted)'};margin-bottom:0.4rem">${codeLabel}</div>
+        <pre style="background:rgba(0,0,0,0.35);padding:0.75rem 1rem;border-radius:var(--radius-sm);overflow-x:auto;font-size:0.82rem;margin:0">${(res.deploy.corrected_code || '').trim()}</pre>
+      </div>`;
+      html += '</div>';
+
+      el.innerHTML = html;
     }
 
     // ---- Analytics ----
@@ -591,6 +769,73 @@
       } else {
         toast('Retrain failed', 'error');
       }
+    }
+
+    // ---- Dependency Assistant chat ----
+    function escapeHtml(s) {
+      return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    // Minimal, safe (HTML-escaped first) renderer for the subset of markdown
+    // used in chat replies: ```fenced code```, `inline code`, **bold**, newlines.
+    function renderChatMarkdown(text) {
+      const escaped = escapeHtml(text);
+      const withFences = escaped.replace(/```([\s\S]*?)```/g, (_, code) => `<pre><code>${code.trim()}</code></pre>`);
+      const withInlineCode = withFences.replace(/`([^`]+)`/g, '<code>$1</code>');
+      const withBold = withInlineCode.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+      return withBold.replace(/\n/g, '<br>');
+    }
+
+    function appendChatBubble(role, text, riskClass) {
+      const log = document.getElementById('chatLog');
+      const bubble = document.createElement('div');
+      bubble.className = 'chat-bubble ' + role + (riskClass ? ' ' + riskClass : '');
+      bubble.innerHTML = renderChatMarkdown(text);
+      log.appendChild(bubble);
+      log.scrollTop = log.scrollHeight;
+      return bubble;
+    }
+
+    async function sendChat() {
+      const input = document.getElementById('chatInput');
+      const message = input.value.trim();
+      if (!message) return;
+
+      appendChatBubble('user', message);
+      input.value = '';
+
+      const btn = document.getElementById('chatSendBtn');
+      btn.disabled = true;
+      const log = document.getElementById('chatLog');
+      const typing = document.createElement('div');
+      typing.className = 'chat-typing';
+      typing.textContent = 'Checking against PyPI and the model...';
+      log.appendChild(typing);
+      log.scrollTop = log.scrollHeight;
+
+      const res = await apiFetch('/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message })
+      });
+
+      typing.remove();
+      btn.disabled = false;
+
+      if (!res) {
+        appendChatBubble('assistant', '⚠️ Could not reach the assistant. Is the server still running?', 'risk-high');
+        return;
+      }
+      if (res.error) {
+        appendChatBubble('assistant', '⚠️ ' + res.error, 'risk-high');
+        return;
+      }
+
+      let riskClass = '';
+      if (res.validation) {
+        riskClass = res.validation.risk_score >= 0.5 ? 'risk-high' : (res.validation.risk_score === 0 ? 'risk-clean' : '');
+      }
+      appendChatBubble('assistant', res.reply, riskClass);
     }
 
     // ---- Boot ----

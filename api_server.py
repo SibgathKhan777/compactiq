@@ -24,6 +24,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from pycompat_model import PyCompatModel
 from validate import validate_install_code
+from deploy_check import compare_local_vs_deploy
 
 app = Flask(__name__)
 CORS(app)
@@ -140,6 +141,38 @@ def validate():
     return jsonify(result)
 
 
+@app.route("/api/deploy-check", methods=["POST"])
+def deploy_check():
+    """
+    Compares dependencies that work on your local machine against a deployment
+    target (e.g. a Linux Docker container) and flags anything that would break
+    only after deploying -- the "works on my machine" gap.
+
+    Request body:
+        { "code": "pip install torch==2.8.0", "python_version": "3.12",
+          "local_platform": "darwin_arm64", "deploy_platform": "linux_x86_64" }
+        Optional: "deploy_python_version" (if the deploy target pins a different
+        Python version than local), "live": false (ML-only).
+
+    Response:
+        { "safe_to_deploy": bool, "regressions": [...], "local": {...}, "deploy": {...} }
+    """
+    data = request.get_json()
+    if not data or "code" not in data:
+        return jsonify({"error": "JSON body with 'code' required"}), 400
+
+    result = compare_local_vs_deploy(
+        data["code"],
+        python_version=data.get("python_version", "3.12"),
+        local_platform=data.get("local_platform", "darwin_x86_64"),
+        deploy_platform=data.get("deploy_platform", "linux_x86_64"),
+        deploy_python_version=data.get("deploy_python_version"),
+        model=model,
+        live=data.get("live", True),
+    )
+    return jsonify(result)
+
+
 @app.route("/api/packages", methods=["GET"])
 def packages():
     """List all known packages and their versions."""
@@ -183,6 +216,7 @@ def main():
     print(f"   POST /api/predict/batch   — Batch predictions")
     print(f"   POST /api/recommend       — Version recommendations")
     print(f"   POST /api/validate        — Validate + auto-correct pip install code")
+    print(f"   POST /api/deploy-check    — Compare local vs. deployment-target compatibility")
     print(f"   GET  /api/packages        — List packages")
     print(f"   GET  /api/info            — Model info")
     print(f"   GET  /api/health          — Health check\n")

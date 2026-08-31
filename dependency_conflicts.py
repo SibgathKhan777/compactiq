@@ -24,15 +24,72 @@ from packaging.version import InvalidVersion
 
 from live_verify import check_version_exists
 
+# Synthetic packaging.markers environments per platform_key. Without this,
+# Marker.evaluate() falls back to packaging.markers.default_environment(),
+# which reads the REAL values of the machine running this code (sys_platform,
+# platform_system, platform_machine, os_name, ...) -- not the target platform
+# the caller asked about. That means a marker like `colorama; platform_system
+# == "Windows"` (a real PyPI marker, from tqdm) would silently evaluate as
+# False when this process runs on macOS/Linux, even if the caller explicitly
+# requested platform="win_amd64" -- exactly the "environment markers are
+# evaluated on the machine running pip, not the target machine" pitfall.
+_PLATFORM_ENVIRONMENTS = {
+    "darwin_x86_64": {
+        "os_name": "posix", "sys_platform": "darwin", "platform_system": "Darwin",
+        "platform_machine": "x86_64", "platform_release": "23.0.0",
+        "platform_version": "Darwin Kernel Version 23.0.0",
+        "platform_python_implementation": "CPython", "implementation_name": "cpython",
+    },
+    "darwin_arm64": {
+        "os_name": "posix", "sys_platform": "darwin", "platform_system": "Darwin",
+        "platform_machine": "arm64", "platform_release": "23.0.0",
+        "platform_version": "Darwin Kernel Version 23.0.0",
+        "platform_python_implementation": "CPython", "implementation_name": "cpython",
+    },
+    "linux_x86_64": {
+        "os_name": "posix", "sys_platform": "linux", "platform_system": "Linux",
+        "platform_machine": "x86_64", "platform_release": "6.1.0",
+        "platform_version": "#1 SMP",
+        "platform_python_implementation": "CPython", "implementation_name": "cpython",
+    },
+    "linux_aarch64": {
+        "os_name": "posix", "sys_platform": "linux", "platform_system": "Linux",
+        "platform_machine": "aarch64", "platform_release": "6.1.0",
+        "platform_version": "#1 SMP",
+        "platform_python_implementation": "CPython", "implementation_name": "cpython",
+    },
+    "win_amd64": {
+        "os_name": "nt", "sys_platform": "win32", "platform_system": "Windows",
+        "platform_machine": "AMD64", "platform_release": "10",
+        "platform_version": "10.0.19045",
+        "platform_python_implementation": "CPython", "implementation_name": "cpython",
+    },
+}
+
 
 def _canon(name):
     return canonicalize_name(name)
 
 
-def check_batch(pins, python_version):
+def _marker_environment(platform_key, python_version):
+    base = _PLATFORM_ENVIRONMENTS.get(platform_key, _PLATFORM_ENVIRONMENTS["linux_x86_64"])
+    full_version = f"{python_version}.0"
+    return {
+        **base,
+        "python_version": python_version,
+        "python_full_version": full_version,
+        "implementation_version": full_version,
+        "extra": "",
+    }
+
+
+def check_batch(pins, python_version, platform_key="linux_x86_64"):
     """
     pins: dict of {package_name: version_string}, e.g.
           {"torch": "2.8.0", "torchvision": "0.17.0"}
+    platform_key: the TARGET platform (e.g. "win_amd64") -- markers are
+          evaluated against a synthetic environment for this platform, not
+          whatever machine happens to be running this code.
 
     Returns:
         {
@@ -45,6 +102,7 @@ def check_batch(pins, python_version):
     canon_pins = {_canon(k): v for k, v in pins.items()}
     conflicts = []
     unresolved = []
+    marker_env = _marker_environment(platform_key, python_version)
 
     for pkg, version in pins.items():
         info = check_version_exists(pkg, version)
@@ -60,7 +118,7 @@ def check_batch(pins, python_version):
 
             if req.marker is not None:
                 try:
-                    applies = req.marker.evaluate({"python_version": python_version, "extra": ""})
+                    applies = req.marker.evaluate(marker_env)
                 except UndefinedEnvironmentName:
                     applies = True
                 if not applies:
@@ -98,12 +156,13 @@ if __name__ == "__main__":
     import sys
     import json
 
-    if len(sys.argv) < 4 or len(sys.argv) % 2 != 0:
-        print("Usage: python dependency_conflicts.py <python_version> <pkg1> <ver1> [<pkg2> <ver2> ...]")
-        print('Example: python dependency_conflicts.py 3.12 torch 2.8.0 torchvision 0.17.0')
+    if len(sys.argv) < 5 or len(sys.argv) % 2 != 1:
+        print("Usage: python dependency_conflicts.py <python_version> <platform_key> <pkg1> <ver1> [<pkg2> <ver2> ...]")
+        print('Example: python dependency_conflicts.py 3.12 win_amd64 tqdm 4.67.1 colorama 0.3.0')
         sys.exit(1)
 
     py_version = sys.argv[1]
-    rest = sys.argv[2:]
+    plat_key = sys.argv[2]
+    rest = sys.argv[3:]
     pin_dict = {rest[i]: rest[i + 1] for i in range(0, len(rest), 2)}
-    print(json.dumps(check_batch(pin_dict, py_version), indent=2))
+    print(json.dumps(check_batch(pin_dict, py_version, plat_key), indent=2))

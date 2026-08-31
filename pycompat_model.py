@@ -271,7 +271,15 @@ class PyCompatModel:
             pred = self.predict(package, v, python_version, platform)
             results.append(pred)
 
-        results.sort(key=lambda x: (x["is_compatible"], x["compatibility_probability"]), reverse=True)
+        # Tiebreak on version recency, not just compatibility/probability --
+        # without this, multiple versions tied at 100% compatible sort in
+        # whatever order self.package_versions happened to store them (a
+        # lexical string sort), so the "best" recommendation could silently
+        # be an older release than one that's equally compatible.
+        results.sort(
+            key=lambda x: (x["is_compatible"], x["compatibility_probability"], self._parse_version(x["version"])),
+            reverse=True,
+        )
         return results[:top_n]
 
     def predict_batch(self, queries):
