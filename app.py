@@ -474,10 +474,14 @@ def chat():
         # Windows, not whatever machine happens to be running this dashboard.
         stated_local = data.get("local_platform") or _detect_stated_local_platform(message)
         local_platform_for_check = stated_local or platform_key
+        wants_docker_verify = data.get("docker_verify", False) or any(
+            kw in lowered_message for kw in ("verify with docker", "docker verify", "really test", "actually test", "docker test")
+        )
         try:
             comparison = compare_local_vs_deploy(
                 message, python_version, local_platform_for_check,
-                deploy_platform=deploy_platform, model=chat_model, live=live
+                deploy_platform=deploy_platform, model=chat_model, live=live,
+                docker_verify=wants_docker_verify,
             )
         except Exception as e:
             return jsonify({"error": str(e)}), 500
@@ -510,7 +514,14 @@ def deploy_check_route():
 
     Request body:
         { "code": "boto3==1.42.49\\npywin32==308", "python_version": "3.12",
-          "local_platform": "win_amd64", "deploy_platform": "linux_x86_64" }
+          "local_platform": "win_amd64", "deploy_platform": "linux_x86_64",
+          "docker_verify": false }
+
+    docker_verify: when true, runs real `pip install` + `import` tests in
+        Docker containers for the deploy side (linux targets only), catching
+        failures no metadata check can see -- e.g. a package with a
+        platform-universal wheel that transitively depends on something
+        OS-locked. Slow (5-15s per package); off by default.
 
     Response:
         { "safe_to_deploy": bool, "regressions": [...], "local": {...}, "deploy": {...} }
@@ -531,6 +542,7 @@ def deploy_check_route():
             deploy_python_version=data.get("deploy_python_version"),
             model=chat_model,
             live=data.get("live", True),
+            docker_verify=data.get("docker_verify", False),
         )
         return jsonify(result)
     except Exception as e:

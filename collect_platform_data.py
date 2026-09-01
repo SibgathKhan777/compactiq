@@ -65,15 +65,41 @@ def import_name_for(package):
     return package.replace("-", "_")
 
 
-def test_one(package, version, python_version, platform_key, timeout=120):
-    """Runs one install+import test in a fresh container. Returns a data.json-shaped record."""
+# The standard EC2 provisioning fix for "package X needs to compile from
+# source" (build-essential + python3-dev + libpq-dev + libssl-dev + libffi-dev
+# covers the overwhelming majority of real packages: psycopg2, cryptography,
+# and most other C-extension libraries). Only installed when actually needed
+# (see install_build_tools below) -- it costs real time (~15-30s in a fresh
+# container) and a bare wheel install never needs it.
+_APT_BUILD_TOOLS_CMD = (
+    "apt-get update -qq && apt-get install -y -qq --no-install-recommends "
+    "build-essential python3-dev libpq-dev libssl-dev libffi-dev >/tmp/apt.log 2>&1"
+)
+
+
+def test_one(package, version, python_version, platform_key, timeout=120, install_build_tools=False):
+    """
+    Runs one install+import test in a fresh container. Returns a
+    data.json-shaped record.
+
+    install_build_tools: when True, installs build-essential/python3-dev/
+        libpq-dev/libssl-dev/libffi-dev before attempting the install -- the
+        real-world EC2 fix for "package needs to compile from source". The
+        python:*-slim base image has NO compiler by default, so without this,
+        every sdist-only package looks like a hard failure here even when it
+        would install fine on a properly provisioned server. Costs real time,
+        so only pass True when metadata already suggests it's needed (no
+        wheel, but an sdist exists).
+    """
     docker_platform = PLATFORM_TO_DOCKER.get(platform_key)
     if not docker_platform:
         raise ValueError(f"No docker platform mapping for {platform_key}")
 
     image = f"python:{python_version}-slim"
     import_name = import_name_for(package)
+    setup = f"{_APT_BUILD_TOOLS_CMD}; " if install_build_tools else ""
     script = (
+        f"{setup}"
         f"pip install --no-cache-dir --disable-pip-version-check '{package}=={version}' "
         f"> /tmp/install.log 2>&1; echo INSTALL_RC=$?; "
         f"python -c 'import {import_name}' > /tmp/import.log 2>&1; echo IMPORT_RC=$?; "
@@ -81,6 +107,9 @@ def test_one(package, version, python_version, platform_key, timeout=120):
         f"echo ---IMPORT_LOG---; tail -c 400 /tmp/import.log"
     )
     cmd = ["docker", "run", "--rm", "--platform", docker_platform, image, "bash", "-c", script]
+
+    if install_build_tools:
+        timeout = max(timeout, 180)  # apt-get + a from-source build can genuinely take a while
 
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)

@@ -286,6 +286,12 @@
             </select>
           </div>
         </div>
+
+        <label style="display:flex;align-items:center;gap:0.5rem;font-size:0.82rem;color:var(--text-secondary);margin:0.75rem 0;cursor:pointer">
+          <input type="checkbox" id="deployDockerVerify" style="width:auto">
+          🐳 Verify with real Docker installs (slower, but catches failures PyPI metadata alone can't see -- Linux targets only)
+        </label>
+
         <button class="btn btn-primary" onclick="checkDeploy()" id="deployBtn">🚀 Check Deploy Compatibility</button>
 
         <div id="deployResult" style="display:none;margin-top:1.5rem"></div>
@@ -523,10 +529,13 @@
       const deploySelect = document.getElementById('deployTarget');
       const deployPlatform = deploySelect.value;
       const deployLabel = deploySelect.options[deploySelect.selectedIndex].text;
+      const dockerVerify = document.getElementById('deployDockerVerify').checked;
 
       const btn = document.getElementById('deployBtn');
       btn.disabled = true;
-      btn.innerHTML = '<span class="spinner"></span> Checking...';
+      btn.innerHTML = dockerVerify
+        ? '<span class="spinner"></span> Running real Docker installs (this can take a while)...'
+        : '<span class="spinner"></span> Checking...';
 
       const res = await apiFetch('/deploy-check', {
         method: 'POST',
@@ -534,6 +543,7 @@
         body: JSON.stringify({
           code, python_version: py,
           local_platform: localPlatform, deploy_platform: deployPlatform,
+          docker_verify: dockerVerify,
         })
       });
 

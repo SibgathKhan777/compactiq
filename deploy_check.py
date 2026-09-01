@@ -51,7 +51,7 @@ def _is_installable(live_result):
 
 
 def compare_local_vs_deploy(code, python_version, local_platform, deploy_platform="linux_x86_64",
-                             deploy_python_version=None, model=None, live=True):
+                             deploy_python_version=None, model=None, live=True, docker_verify=False):
     """
     Args:
         code: pip install code that's known to work locally
@@ -64,6 +64,12 @@ def compare_local_vs_deploy(code, python_version, local_platform, deploy_platfor
         model: a loaded PyCompatModel, or None to load "./model"
         live: whether to hit PyPI live -- recommended, this check specifically needs ground
             truth for a platform the model has essentially no training signal for.
+        docker_verify: when True, actually runs `pip install` + `import` in a real
+            container for the DEPLOY side (only linux_x86_64/linux_aarch64 targets are
+            Docker-testable; ignored for other targets and for the local side, which the
+            caller has already told us works). Catches failures no metadata check can see
+            -- e.g. a package with a platform-universal wheel that transitively depends
+            on something OS-locked. Slow (5-15s per package) and off by default.
 
     Returns:
         {
@@ -76,7 +82,9 @@ def compare_local_vs_deploy(code, python_version, local_platform, deploy_platfor
     deploy_python_version = deploy_python_version or python_version
 
     local_result = validate_install_code(code, python_version, local_platform, model=model, live=live)
-    deploy_result = validate_install_code(code, deploy_python_version, deploy_platform, model=model, live=live)
+    deploy_result = validate_install_code(
+        code, deploy_python_version, deploy_platform, model=model, live=live, docker_verify=docker_verify
+    )
 
     local_by_pkg = {p["package"]: p for p in local_result["packages"]}
     deploy_by_pkg = {p["package"]: p for p in deploy_result["packages"]}

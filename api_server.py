@@ -116,12 +116,19 @@ def validate():
     Validate (and if needed, correct) LLM-generated `pip install` code -- the
     same contract as the middleware repo's /api/validate-llm-code, built from
     this repo's own ML model + live PyPI verification + joint dependency
-    checking, with no Docker and no LLM call involved.
+    checking. No LLM call involved; Docker is opt-in (see docker_verify).
 
     Request body:
         { "code": "pip install torch==2.8.0 torchvision==0.17.0",
           "python_version": "3.12", "platform": "darwin_x86_64",
-          "live": true }
+          "live": true, "docker_verify": false }
+
+    docker_verify: when true, runs real `pip install` + `import` tests in
+        Docker containers for anything that looks clean from metadata alone
+        (linux_x86_64/linux_aarch64 targets only, requires a running Docker
+        daemon). Catches failures no metadata check can see -- e.g. a package
+        with a platform-universal wheel that transitively depends on
+        something OS-locked. Slow (5-15s per package); off by default.
 
     Response:
         { "original_code": ..., "corrected_code": ..., "risk_score": ...,
@@ -137,6 +144,7 @@ def validate():
         platform=data.get("platform", "darwin_x86_64"),
         model=model,
         live=data.get("live", True),
+        docker_verify=data.get("docker_verify", False),
     )
     return jsonify(result)
 
@@ -152,7 +160,10 @@ def deploy_check():
         { "code": "pip install torch==2.8.0", "python_version": "3.12",
           "local_platform": "darwin_arm64", "deploy_platform": "linux_x86_64" }
         Optional: "deploy_python_version" (if the deploy target pins a different
-        Python version than local), "live": false (ML-only).
+        Python version than local), "live": false (ML-only), "docker_verify": true
+        (runs real `pip install` + `import` tests in Docker containers for the
+        deploy side -- linux targets only, requires a running Docker daemon,
+        slow at 5-15s/package, catches failures no metadata check can see).
 
     Response:
         { "safe_to_deploy": bool, "regressions": [...], "local": {...}, "deploy": {...} }
@@ -169,6 +180,7 @@ def deploy_check():
         deploy_python_version=data.get("deploy_python_version"),
         model=model,
         live=data.get("live", True),
+        docker_verify=data.get("docker_verify", False),
     )
     return jsonify(result)
 

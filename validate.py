@@ -5,14 +5,17 @@ validate every pin against the ML model, live PyPI, AND each other (joint
 dependency conflicts), then return a risk-scored explanation with a corrected
 install line.
 
-Unlike the middleware, this never spins up Docker and never calls an LLM for the
-explanation. Everything here is either a trained classifier already in this repo
+By default this never spins up Docker and never calls an LLM for the explanation
+-- everything is either a trained classifier already in this repo
 (pycompat_model.py) or a live, cheap PyPI metadata lookup (live_verify.py,
-dependency_conflicts.py) -- consistent with compactiq's "lightweight, no queue, no
-containers" design instead of duplicating the middleware's service stack. The
-tradeoff: this can't catch an install-succeeds-but-import-fails-at-runtime bug the
-way the middleware's Docker install+import test can. It catches everything that's
-knowable from PyPI's published metadata plus the trained model's per-package signal.
+dependency_conflicts.py), consistent with compactiq's "lightweight, no queue, no
+containers" design instead of duplicating the middleware's service stack. Metadata
+alone can still be wrong, though -- a package can publish a platform-universal
+wheel while transitively depending on something OS-locked (confirmed real case:
+`wmi`), which no static check catches. Pass docker_verify=True to get real ground
+truth via docker_verify.py: it actually runs `pip install` + `import` in a
+container for anything that looks clean, opt-in because each container run costs
+5-15+ seconds.
 """
 
 import re
@@ -23,6 +26,7 @@ from pycompat_model import PyCompatModel
 import live_verify
 from dependency_conflicts import check_batch
 from explain import explain_package_result, suggest_correction
+from docker_verify import docker_verify_install
 
 PIN_RE = re.compile(r"([A-Za-z0-9_.\-]+)\s*==\s*([A-Za-z0-9_.\-]+)")
 
@@ -32,13 +36,21 @@ def parse_pip_install(code):
     return PIN_RE.findall(code)
 
 
-def _evaluate_pins(pins_dict, python_version, platform, model, live):
+def _evaluate_pins(pins_dict, python_version, platform, model, live, docker_verify=False):
     """
     One evaluation pass over a fixed set of {package: version} pins: joint
     conflict check + per-package ML/live verdict + a proposed correction for
     anything not clean. Does NOT re-check corrections against each other --
     that's what the caller's settle loop is for. Returns
     (per_package_list, conflict_report, next_pins_dict, any_change).
+
+    docker_verify: when True and the package LOOKS clean from metadata alone,
+        actually run a real `pip install` + `import` test in a container
+        before trusting that verdict (see docker_verify.py). This catches
+        failures metadata can't see -- e.g. a package with a platform-
+        universal wheel that transitively depends on something OS-locked.
+        Only runs for packages that pass the cheap metadata check first, to
+        keep the (slow, 5-15s/container) Docker calls bounded.
     """
     if live:
         conflict_report = check_batch(pins_dict, python_version, platform)
@@ -52,6 +64,7 @@ def _evaluate_pins(pins_dict, python_version, platform, model, live):
     per_package = []
     next_pins = {}
     marker_exclusions = {}  # pkg -> {"version": ..., "marker": ...}; removed from next_pins entirely
+    package_renames = {}  # pkg -> {"new_name": ..., "version": ...}; removed from next_pins entirely
     any_change = False
 
     for pkg, version in pins_dict.items():
@@ -63,6 +76,73 @@ def _evaluate_pins(pins_dict, python_version, platform, model, live):
 
         pkg_conflicts = conflicts_by_pkg.get(pkg, [])
         verdict = explain_package_result(ml_result, live_result, pkg_conflicts)
+
+        docker_result = None
+        docker_confirmed_failure = False
+        if docker_verify:
+            # Metadata can be DEFINITIVELY certain something is impossible
+            # (no wheel, no sdist at all -- literally nothing to install) --
+            # no point spending 5-15s confirming the obvious. Anything short
+            # of that (including "flagged only because it's outside the
+            # trained catalog", which is a statistical hedge, not a real
+            # problem) is worth actually testing: that hedge is exactly the
+            # uncertainty a real install result can settle either way.
+            live_says_impossible = (
+                live_result is not None
+                and live_result.get("exists") is True
+                and not live_result.get("wheel_available", True)
+                and not live_result.get("sdist_available", True)
+            )
+            if not live_says_impossible:
+                # No wheel but an sdist exists -- this is exactly the
+                # ambiguous case a bare test container gets wrong (no
+                # compiler by default), so provision it like a real EC2
+                # instance would be (build-essential etc.) before testing.
+                needs_build_tools = (
+                    live_result is not None
+                    and live_result.get("exists") is True
+                    and not live_result.get("wheel_available", True)
+                    and live_result.get("sdist_available", False)
+                )
+                docker_result = docker_verify_install(
+                    pkg, version, python_version, platform, install_build_tools=needs_build_tools
+                )
+
+            if docker_result is not None and docker_result.get("install_success") is not None:
+                actually_works = docker_result["install_success"] and docker_result["import_success"]
+                docker_confirmed_failure = not actually_works
+                # A real container result is stronger evidence than any
+                # static signal (ML novelty hedge, "might need a build
+                # toolchain" caution, etc.) -- always lead with it, whichever
+                # way it goes, rather than only overriding when it happens to
+                # flip the prior is_clean value. Otherwise a Docker-confirmed
+                # failure for something ALREADY flagged unclean for an
+                # unrelated, vaguer reason (e.g. wmi's "novel package" hedge)
+                # never surfaces the actual, specific, correct root cause
+                # (wmi transitively depends on pywin32, which doesn't exist
+                # on Linux) in the visible explanation.
+                if actually_works:
+                    verdict = {
+                        "risk_score": 0.0,
+                        "is_clean": True,
+                        "explanation": (
+                            f"Confirmed via a real Docker install+import test on {platform}/py{python_version}: "
+                            f"`pip install {pkg}=={version}` succeeds. (Static checks alone said: "
+                            f"{verdict['explanation']})"
+                        ),
+                    }
+                else:
+                    verdict = {
+                        "risk_score": max(verdict["risk_score"], 0.7),
+                        "is_clean": False,
+                        "explanation": (
+                            f"Confirmed via a real Docker install test on {platform}/py{python_version}: "
+                            f"`pip install {pkg}=={version}` actually FAILS "
+                            f"({docker_result.get('error_type', 'unknown')}) -- "
+                            f"{(docker_result.get('error_log_snippet') or '').strip()[-250:]} "
+                            f"(Static checks alone said: {verdict['explanation']})"
+                        ),
+                    }
 
         chosen_version = version
         if not verdict["is_clean"]:
@@ -77,6 +157,7 @@ def _evaluate_pins(pins_dict, python_version, platform, model, live):
             correction = suggest_correction(
                 model, pkg, python_version, platform,
                 live_check_fn=live_check_fn, required_specifier=combined_specifier,
+                trust_marker_exclusion=docker_confirmed_failure,
             )
             if correction:
                 if correction.get("marker_exclude"):
@@ -88,11 +169,18 @@ def _evaluate_pins(pins_dict, python_version, platform, model, live):
                     # corrected_code once the loop finishes.
                     marker_exclusions[pkg] = {"version": version, "marker": correction["marker"]}
                     any_change = True
+                elif correction.get("package_rename"):
+                    # A real -binary sibling package works (e.g. psycopg2 ->
+                    # psycopg2-binary) -- this changes the PACKAGE NAME, not
+                    # just the version, so like marker exclusions it can't
+                    # flow back through next_pins under the old name.
+                    package_renames[pkg] = {"new_name": correction["package_rename"], "version": correction["version"]}
+                    any_change = True
                 elif correction["version"] != version:
                     chosen_version = correction["version"]
                     any_change = True
 
-        if pkg not in marker_exclusions:
+        if pkg not in marker_exclusions and pkg not in package_renames:
             next_pins[pkg] = chosen_version
         per_package.append({
             "package": pkg,
@@ -100,14 +188,16 @@ def _evaluate_pins(pins_dict, python_version, platform, model, live):
             "corrected_version": chosen_version,
             "ml_result": ml_result,
             "live_result": live_result,
+            "docker_result": docker_result,
             "conflicts": pkg_conflicts,
             **verdict,
         })
 
-    return per_package, conflict_report, next_pins, any_change, marker_exclusions
+    return per_package, conflict_report, next_pins, any_change, marker_exclusions, package_renames
 
 
-def validate_install_code(code, python_version="3.12", platform="darwin_x86_64", model=None, live=True, max_passes=3):
+def validate_install_code(code, python_version="3.12", platform="darwin_x86_64", model=None, live=True,
+                           max_passes=3, docker_verify=False):
     """
     Args:
         code: raw text containing one or more `package==version` pins
@@ -123,6 +213,13 @@ def validate_install_code(code, python_version="3.12", platform="darwin_x86_64",
               suggest_correction() only sees one package at a time. This re-runs
               the full joint check on the corrected set, up to max_passes times,
               until nothing changes or the cap is hit.
+        docker_verify: when True, actually runs `pip install` + `import` in a
+              real Docker container for anything that looks clean from
+              metadata alone, catching failures metadata can't see (e.g. a
+              transitive dependency that's OS-locked). Only works for
+              linux_x86_64/linux_aarch64 targets and requires a running Docker
+              daemon; slow (5-15s per container) and OFF by default -- opt in
+              when you want real ground truth, not just PyPI metadata.
 
     Returns a dict matching the shape of the middleware repo's
     /api/validate-llm-code response: original code, corrected code, an overall
@@ -152,14 +249,16 @@ def validate_install_code(code, python_version="3.12", platform="darwin_x86_64",
     issue_log = {}
 
     all_marker_exclusions = {}  # pkg -> {"version": ..., "marker": ...}, accumulated across passes
+    all_package_renames = {}  # pkg -> {"new_name": ..., "version": ...}, accumulated across passes
 
     per_package, conflict_report, next_pins, any_change = None, None, None, True
     passes_run = 0
     for passes_run in range(1, max_passes + 1):
-        per_package, conflict_report, next_pins, any_change, marker_exclusions = _evaluate_pins(
-            current_pins, python_version, platform, model, live
+        per_package, conflict_report, next_pins, any_change, marker_exclusions, package_renames = _evaluate_pins(
+            current_pins, python_version, platform, model, live, docker_verify=docker_verify
         )
         all_marker_exclusions.update(marker_exclusions)
+        all_package_renames.update(package_renames)
         for p in per_package:
             if not p["is_clean"]:
                 issue_log[p["package"]] = {"explanation": p["explanation"], "risk_score": p["risk_score"]}
@@ -167,13 +266,14 @@ def validate_install_code(code, python_version="3.12", platform="darwin_x86_64",
             break
         current_pins = next_pins
 
-    # A marker-excluded package is a legitimate resolution (we determined it
-    # genuinely doesn't belong on this platform and handled that correctly),
-    # not an unresolved issue -- don't let its last-seen is_clean=False (from
-    # the pass where it got flagged, before exclusion) count against
-    # fully_resolved.
+    # A marker-excluded or renamed package is a legitimate resolution (we
+    # determined it genuinely doesn't belong here, or found a real working
+    # sibling package), not an unresolved issue -- don't let its last-seen
+    # is_clean=False (from the pass where it got flagged, before resolution)
+    # count against fully_resolved.
     fully_resolved = len(conflict_report["conflicts"]) == 0 and all(
-        p["is_clean"] or p["package"] in all_marker_exclusions for p in per_package
+        p["is_clean"] or p["package"] in all_marker_exclusions or p["package"] in all_package_renames
+        for p in per_package
     )
     max_risk = max((p["risk_score"] for p in per_package), default=0.0)
 
@@ -197,6 +297,7 @@ def validate_install_code(code, python_version="3.12", platform="darwin_x86_64",
                 "changed": True,
                 "ml_result": None,
                 "live_result": None,
+                "docker_result": None,
                 "conflicts": [],
                 "risk_score": 0.0,
                 "explanation": (
@@ -204,6 +305,31 @@ def validate_install_code(code, python_version="3.12", platform="darwin_x86_64",
                     f"no version bump fixes this, it's not built for other platforms at all. Marked with "
                     f"an environment marker so `pip install -r requirements.txt` skips it here instead of "
                     f"failing. Previously: {issue['explanation'] if issue else 'no wheel or source distribution for this platform.'}"
+                ),
+                "is_clean": True,
+            })
+            continue
+
+        if pkg in all_package_renames:
+            new_name = all_package_renames[pkg]["new_name"]
+            new_version = all_package_renames[pkg]["version"]
+            corrected_code = corrected_code.replace(f"{pkg}=={orig_ver}", f"{new_name}=={new_version}")
+            issue = issue_log.get(pkg)
+            final_report.append({
+                "package": pkg,
+                "requested_version": orig_ver,
+                "corrected_version": f"{new_name}=={new_version}",
+                "changed": True,
+                "ml_result": None,
+                "live_result": None,
+                "docker_result": None,
+                "conflicts": [],
+                "risk_score": 0.0,
+                "explanation": (
+                    f"{pkg} has no working wheel here, but its prebuilt sibling package {new_name} does "
+                    f"(the standard real-world fix -- e.g. psycopg2 -> psycopg2-binary). Switched to "
+                    f"{new_name}=={new_version}. Previously: "
+                    f"{issue['explanation'] if issue else 'no wheel for this platform.'}"
                 ),
                 "is_clean": True,
             })
@@ -222,6 +348,7 @@ def validate_install_code(code, python_version="3.12", platform="darwin_x86_64",
             "changed": changed,
             "ml_result": matching["ml_result"] if matching else None,
             "live_result": matching["live_result"] if matching else None,
+            "docker_result": matching["docker_result"] if matching else None,
             "conflicts": matching["conflicts"] if matching else [],
             "risk_score": issue["risk_score"] if issue else (matching["risk_score"] if matching else 0.0),
             "explanation": issue["explanation"] if issue else (matching["explanation"] if matching else ""),

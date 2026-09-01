@@ -117,7 +117,8 @@ def explain_package_result(ml_result, live_result, conflicts_for_package):
     return {"risk_score": risk, "explanation": explanation, "is_clean": is_clean}
 
 
-def suggest_correction(model, package, python_version, platform, live_check_fn=None, top_n=5, required_specifier=None):
+def suggest_correction(model, package, python_version, platform, live_check_fn=None, top_n=5,
+                        required_specifier=None, trust_marker_exclusion=False):
     """
     Recommend a replacement version, preferring one that is BOTH ML-predicted
     compatible AND (if a live checker is supplied) actually has a wheel on PyPI.
@@ -130,6 +131,13 @@ def suggest_correction(model, package, python_version, platform, live_check_fn=N
         dependency_conflicts.py). Candidates that don't satisfy it are skipped --
         recommending a version that's "compatible" but still violates a real
         declared constraint isn't actually a fix.
+
+    trust_marker_exclusion: when True, skip the sdist-presence caution below
+        and go straight to platform-marker exclusion if wheel tags suggest a
+        single OS. Pass this when a real Docker install already CONFIRMED
+        this package fails on the target -- that resolves the ambiguity a
+        published sdist normally represents (see _suggest_platform_marker_exclusion),
+        so there's no need to stay cautious about it.
 
     If the package is outside the trained catalog entirely (model.recommend()
     has nothing), falls back to picking a version directly from PyPI's real
@@ -187,11 +195,67 @@ def suggest_correction(model, package, python_version, platform, live_check_fn=N
     # tooling will either, and the real answer is the standard requirements.txt
     # environment-marker pattern (skip it on platforms it was never meant for),
     # not a false "sdist available, might work" fallback.
-    marker_suggestion = _suggest_platform_marker_exclusion(package, python_version, platform, live_check_fn)
+    marker_suggestion = _suggest_platform_marker_exclusion(
+        package, python_version, platform, live_check_fn, trust_marker_exclusion=trust_marker_exclusion
+    )
     if marker_suggestion is not None:
         return marker_suggestion
 
+    # Some packages have a well-known `-binary` sibling on PyPI that exists
+    # for exactly this situation (source-only main package needing a build
+    # toolchain) -- e.g. psycopg2 -> psycopg2-binary, the standard real-world
+    # fix. A genuine prebuilt wheel for the sibling package is more reliable
+    # than hoping the base package's sdist happens to build, so check this
+    # before falling back to that.
+    binary_suggestion = _suggest_binary_variant(package, python_version, platform, live_check_fn, spec)
+    if binary_suggestion is not None:
+        return binary_suggestion
+
     return _live_pypi_fallback(package, python_version, platform, live_check_fn, spec)
+
+
+def _suggest_binary_variant(package, python_version, platform_key, live_check_fn, spec):
+    if live_check_fn is None or package.lower().endswith("-binary"):
+        return None
+
+    import live_verify
+    from packaging.version import Version, InvalidVersion
+
+    binary_name = f"{package}-binary"
+    info = live_verify.check_package_exists(binary_name)
+    if not info.get("exists"):
+        return None
+
+    def _parse(v):
+        try:
+            return Version(v)
+        except InvalidVersion:
+            return None
+
+    ranked = []
+    for v in info.get("all_versions", []):
+        pv = _parse(v)
+        if pv is None or pv.is_prerelease or pv.is_devrelease:
+            continue
+        if spec is not None:
+            try:
+                if not spec.contains(v, prereleases=True):
+                    continue
+            except Exception:
+                continue
+        ranked.append((pv, v))
+    ranked.sort(key=lambda x: x[0], reverse=True)
+
+    for _, v in ranked[:5]:
+        live = live_check_fn(binary_name, v, platform_key, python_version)
+        if live.get("wheel_available"):
+            return {
+                "version": v,
+                "is_compatible": True,
+                "package_rename": binary_name,
+                "source": "binary_variant_suggestion",
+            }
+    return None
 
 
 _PLATFORM_KEY_TO_SYS_PLATFORM = {
@@ -217,7 +281,7 @@ def _infer_native_platform_marker(filenames):
     return families[0] if len(families) == 1 else None
 
 
-def _suggest_platform_marker_exclusion(package, python_version, platform_key, live_check_fn):
+def _suggest_platform_marker_exclusion(package, python_version, platform_key, live_check_fn, trust_marker_exclusion=False):
     if live_check_fn is None:
         return None
 
@@ -229,7 +293,24 @@ def _suggest_platform_marker_exclusion(package, python_version, platform_key, li
 
     latest = info["latest_version"]
     version_info = live_verify.check_version_exists(package, latest)
-    filenames = [f["filename"] for f in version_info.get("files", [])]
+    files = version_info.get("files", [])
+
+    # A published sdist is normally real evidence the maintainers intend this
+    # to be buildable on other platforms (why else ship source?) -- e.g.
+    # psycopg2 only publishes Windows wheels but DOES publish a source dist
+    # that builds fine on Linux/Mac given a C compiler + libpq headers, which
+    # is the standard "install build-essential" fix, not a platform-exclusive
+    # package. But pyobjc-framework-Cocoa ALSO publishes an sdist, and that
+    # one needs actual macOS frameworks that will never exist on Linux --
+    # sdist presence alone can't tell these two cases apart from static
+    # metadata. trust_marker_exclusion=True means a real Docker install
+    # already resolved that ambiguity with an actual confirmed failure, so
+    # it's safe to skip this caution and trust the wheel-tag evidence.
+    has_sdist = any(f.get("packagetype") == "sdist" for f in files)
+    if has_sdist and not trust_marker_exclusion:
+        return None
+
+    filenames = [f["filename"] for f in files]
     marker_platform = _infer_native_platform_marker(filenames)
     if marker_platform is None:
         return None
