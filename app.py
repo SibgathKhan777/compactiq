@@ -85,6 +85,7 @@ METRICS_FILE = os.path.join(MODEL_DIR, "model_metrics.json")  # legacy path from
 COMPAT_MODEL_FILE = os.path.join(MODEL_DIR, "compat_model.joblib")
 PYCOMPAT_MODEL_DIR = os.path.join(MODEL_DIR, "model")
 PYCOMPAT_CONFIG_FILE = os.path.join(PYCOMPAT_MODEL_DIR, "config.json")  # where PyCompatModel.save() actually writes metrics
+TEMPORAL_HOLDOUT_FILE = os.path.join(MODEL_DIR, "model_metrics_temporal_holdout.json")
 
 # Global predictor instance
 predictor = None
@@ -148,6 +149,77 @@ def auto_retrain():
             return False
 
 
+def _read_package_holdout_accuracy(path=TEMPORAL_HOLDOUT_FILE):
+    """Pulls the PACKAGE HOLDOUT split's compatibility.accuracy out of a saved
+    model_metrics_temporal_holdout.json -- the real-generalization number
+    gated_retrain_chat_model() compares against, not the in-distribution
+    accuracy stored in model/config.json's metadata (that number always looks
+    fine on a growing-but-similar dataset and wouldn't catch a bad batch of
+    promoted observations). Returns None if the file doesn't exist yet (first
+    run -- nothing to regress against) or the split can't be found."""
+    if not os.path.exists(path):
+        return None
+    with open(path) as f:
+        saved = json.load(f)
+    from eval_temporal_holdout import package_holdout_split_label
+    label = package_holdout_split_label()
+    for split in saved.get("splits", []):
+        if label in split.get("split", ""):
+            return split["compatibility"]["accuracy"]
+    return None
+
+
+def gated_retrain_chat_model():
+    """
+    Retrains the PyCompatModel served from model/ (chat_model -- the model
+    actually behind /chat, /api/validate, /api/deploy-check, and
+    fix_project_requirements.py) against the current data.json, but only
+    swaps it in if it doesn't regress on PACKAGE HOLDOUT accuracy relative to
+    the currently-served model's last recorded number.
+
+    Distinct from auto_retrain() above: that function retrains the separate
+    legacy predict.py model (root-level compat_model.joblib) with no gating at
+    all -- kept as-is for the routes still built on it (/predict, /recommend,
+    /packages, /stats). This function is the one that matters for everything
+    else in this repo, and is the one wired to actually improve when new
+    crowd-promoted rows land in data.json via promote_observations.py.
+    """
+    global chat_model
+    with retrain_lock:
+        try:
+            from eval_temporal_holdout import run_all_splits
+            from pycompat_model import PyCompatModel
+
+            baseline_accuracy = _read_package_holdout_accuracy()
+            print("🔄 Evaluating candidate model on PACKAGE HOLDOUT split "
+                  f"(baseline: {baseline_accuracy if baseline_accuracy is not None else 'none recorded yet'})...")
+            candidate_splits = run_all_splits(DATA_FILE, verbose=False)
+            from eval_temporal_holdout import package_holdout_split_label
+            label = package_holdout_split_label()
+            candidate_split = next(s for s in candidate_splits if label in s["split"])
+            candidate_accuracy = candidate_split["compatibility"]["accuracy"]
+
+            if baseline_accuracy is not None and candidate_accuracy < baseline_accuracy:
+                print(f"⚠️  Skipping model swap: PACKAGE HOLDOUT accuracy would regress "
+                      f"({candidate_accuracy:.4f} < {baseline_accuracy:.4f}). Keeping currently-served model.")
+                return False
+
+            print(f"✅ No regression ({candidate_accuracy:.4f} "
+                  f"{'>= ' + format(baseline_accuracy, '.4f') if baseline_accuracy is not None else '(first baseline)'}"
+                  f") -- training and swapping in the live model.")
+            new_model = PyCompatModel.train_from_data(DATA_FILE)
+            new_model.save(PYCOMPAT_MODEL_DIR)
+            chat_model = new_model
+
+            with open(TEMPORAL_HOLDOUT_FILE, "w") as f:
+                json.dump({"splits": candidate_splits}, f, indent=2)
+
+            return True
+        except Exception as e:
+            print(f"❌ Gated chat-model retrain failed, keeping previous model: {e}")
+            return False
+
+
 def check_data_changes():
     """Background thread to watch for data.json changes and auto-retrain."""
     global data_hash
@@ -158,6 +230,7 @@ def check_data_changes():
         if new_hash and new_hash != data_hash:
             print("📦 Data change detected, auto-retraining...")
             auto_retrain()
+            gated_retrain_chat_model()
 
 
 # --- Routes ---
@@ -331,7 +404,13 @@ def _format_deploy_reply(comparison, host_profile, stack_label=None, deploy_labe
             f"✅ No regressions found -- everything you pinned works locally exactly as-is and also "
             f"checks out on {comparison['deploy_platform']}. Safe to deploy as-is:"
         )
-        lines.append(f"\n```\n{comparison['local']['corrected_code'].strip()}\n```")
+        # Show the DEPLOY side's corrected code, not the local side's -- they
+        # can genuinely differ even when both are "safe" (e.g. pywin32 needs
+        # no changes on win_amd64 since it's native there, but needs a
+        # platform-marker exclusion on the Linux deploy target). Showing the
+        # local code here was silently handing back pins that don't actually
+        # reflect what's safe on the platform being deployed to.
+        lines.append(f"\n```\n{comparison['deploy']['corrected_code'].strip()}\n```")
         return "\n".join(lines)
 
     if comparison["regressions"]:

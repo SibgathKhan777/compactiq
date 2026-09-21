@@ -50,7 +50,6 @@ from sklearn.model_selection import train_test_split
 
 from pycompat_model import PyCompatModel
 
-DATA_PATH = sys.argv[1] if len(sys.argv) > 1 else "data.json"
 RANDOM_STATE = 42
 
 
@@ -170,14 +169,31 @@ def package_holdout_indices(df, holdout_frac=0.2):
     return train_idx, test_idx, sorted(holdout_packages)
 
 
-def main():
-    with open(DATA_PATH) as f:
+def package_holdout_split_label():
+    """The exact `split` string package_holdout_indices' result is filed under
+    in run_all_splits()'s output -- callers that need to pick that split back
+    out of a saved model_metrics_temporal_holdout.json (e.g. app.py's regression
+    gate) should match on this substring rather than assuming list position."""
+    return "PACKAGE HOLDOUT"
+
+
+def run_all_splits(data_path="data.json", verbose=True):
+    """
+    Runs all three splits and returns the `results` list (same shape written to
+    model_metrics_temporal_holdout.json by main()), without touching disk.
+    Importable by other modules (e.g. app.py's retrain gate) that need a fresh
+    package-holdout number without shelling out to this script.
+    """
+    _print = print if verbose else (lambda *a, **k: None)
+
+    with open(data_path) as f:
         raw_data = json.load(f)
 
-    verify_timestamp_is_scrape_order(raw_data)
+    if verbose:
+        verify_timestamp_is_scrape_order(raw_data)
 
     df, feature_cols, mappings = build_dataset(raw_data)
-    print(f"Loaded {len(df)} rows, {df['package'].nunique()} packages\n")
+    _print(f"Loaded {len(df)} rows, {df['package'].nunique()} packages\n")
 
     results = []
 
@@ -191,9 +207,16 @@ def main():
 
     train_idx, test_idx, held_out_pkgs = package_holdout_indices(df)
     r = train_and_eval(df, feature_cols, train_idx, test_idx,
-                        "3. PACKAGE HOLDOUT (entire packages never seen in training)")
+                        f"3. {package_holdout_split_label()} (entire packages never seen in training)")
     r["held_out_packages_sample"] = held_out_pkgs[:10]
     results.append(r)
+
+    return results
+
+
+def main():
+    data_path = sys.argv[1] if len(sys.argv) > 1 else "data.json"
+    results = run_all_splits(data_path)
 
     with open("model_metrics_temporal_holdout.json", "w") as f:
         json.dump({"splits": results}, f, indent=2)

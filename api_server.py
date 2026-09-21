@@ -25,6 +25,7 @@ from flask_cors import CORS
 from pycompat_model import PyCompatModel
 from validate import validate_install_code
 from deploy_check import compare_local_vs_deploy
+from observation_store import normalize_observation, append_observation, ObservationValidationError
 
 app = Flask(__name__)
 CORS(app)
@@ -185,6 +186,45 @@ def deploy_check():
     return jsonify(result)
 
 
+@app.route("/api/observations", methods=["POST"])
+def observations():
+    """
+    Accepts one real-world compatibility observation from any caller (a user's
+    machine, a CI run, another tool) -- a crowd-sourced supplement to data.json,
+    which today is a fixed curated snapshot. Append-only: this route NEVER
+    writes to data.json. It only appends to observations.jsonl; a submitted
+    row only reaches the trained model after promote_observations.py applies
+    corroboration checks (live PyPI existence + reputation/agreement) offline.
+
+    Request body:
+        { "package": "torch", "version": "2.8.0", "python_version": "3.12",
+          "platform": "linux", "arch": "x86_64", "outcome": "fail",
+          "error_type": "build_error", "device_id_hash": "<opaque hash, not raw PII>",
+          "observed_via": "auto" }
+        "error_type" may be null (required-ish for "fail", ignored for "success").
+        "observed_via" must be "auto" -- this only accepts a result an agent
+        actually captured by running the install, never a self-reported opinion.
+
+    Response:
+        { "accepted": true, "id": "...", "platform_key": "linux_x86_64" | null }
+        A null platform_key means the (platform, arch) combo doesn't map to any
+        platform this model has training data for -- the row is still stored,
+        but can never be promoted into data.json.
+    """
+    data = request.get_json()
+    try:
+        record = normalize_observation(data or {})
+    except ObservationValidationError as e:
+        return jsonify({"error": str(e)}), 400
+
+    append_observation(record)
+    return jsonify({
+        "accepted": True,
+        "id": record["id"],
+        "platform_key": record["platform_key"],
+    }), 201
+
+
 @app.route("/api/packages", methods=["GET"])
 def packages():
     """List all known packages and their versions."""
@@ -229,6 +269,7 @@ def main():
     print(f"   POST /api/recommend       — Version recommendations")
     print(f"   POST /api/validate        — Validate + auto-correct pip install code")
     print(f"   POST /api/deploy-check    — Compare local vs. deployment-target compatibility")
+    print(f"   POST /api/observations    — Submit a real-world compatibility observation")
     print(f"   GET  /api/packages        — List packages")
     print(f"   GET  /api/info            — Model info")
     print(f"   GET  /api/health          — Health check\n")

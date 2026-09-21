@@ -277,18 +277,28 @@ def validate_install_code(code, python_version="3.12", platform="darwin_x86_64",
     )
     max_risk = max((p["risk_score"] for p in per_package), default=0.0)
 
+    # Marker-conditioned requirements ("pkg==X; sys_platform == ...") need
+    # DIFFERENT quoting depending on what `code` actually is:
+    #  - a shell command line ("pip install a b c") needs the whole
+    #    requirement wrapped in quotes, or the shell would split it into
+    #    broken commands at the unquoted semicolon.
+    #  - real requirements.txt file content (one requirement per line, no
+    #    "pip install" prefix -- e.g. what fix_project_requirements.py reads
+    #    off disk) must NOT be quoted: pip's requirements.txt parser follows
+    #    PEP 508 grammar directly, no shell involved, and a literal leading
+    #    quote character breaks parsing entirely ("Expected package name").
+    # "pip install" only appears when this is shell-command-style input, so
+    # it's a reliable signal for which context we're producing output for.
+    is_shell_command = "pip install" in code.lower()
+
     corrected_code = code
     final_report = []
     for pkg, orig_ver in original_pins.items():
         if pkg in all_marker_exclusions:
             marker = all_marker_exclusions[pkg]["marker"]
             marker_display = f"{orig_ver}; {marker}"
-            # corrected_code is meant to be copy-pasted as a real shell command
-            # or requirements.txt line. An unquoted `;` inside it would make a
-            # shell split "pip install ... pkg==X; sys_platform == ..." into
-            # multiple broken commands at every semicolon -- wrap the whole
-            # marker-conditioned requirement in single quotes so it's one token.
-            corrected_code = corrected_code.replace(f"{pkg}=={orig_ver}", f"'{pkg}=={marker_display}'")
+            replacement = f"'{pkg}=={marker_display}'" if is_shell_command else f"{pkg}=={marker_display}"
+            corrected_code = corrected_code.replace(f"{pkg}=={orig_ver}", replacement)
             issue = issue_log.get(pkg)
             final_report.append({
                 "package": pkg,

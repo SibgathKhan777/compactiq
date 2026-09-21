@@ -2,41 +2,41 @@
   "splits": [
     {
       "split": "1. RANDOM ROW SPLIT (existing baseline, in-distribution)",
-      "train_size": 4387,
-      "test_size": 1097,
+      "train_size": 4403,
+      "test_size": 1101,
       "compatibility": {
-        "accuracy": 0.9708,
+        "accuracy": 0.9709,
         "f1_score": 0.97
       },
       "error_type": {
-        "accuracy": 0.9836,
-        "f1_score": 0.9826
+        "accuracy": 0.9791,
+        "f1_score": 0.9772
       }
     },
     {
       "split": "2. VERSION HOLDOUT (newest ~20% of versions per package)",
       "train_size": 3920,
-      "test_size": 1564,
+      "test_size": 1584,
       "compatibility": {
-        "accuracy": 0.9661,
-        "f1_score": 0.9653
+        "accuracy": 0.9659,
+        "f1_score": 0.9651
       },
       "error_type": {
-        "accuracy": 0.9572,
-        "f1_score": 0.9544
+        "accuracy": 0.9577,
+        "f1_score": 0.955
       }
     },
     {
       "split": "3. PACKAGE HOLDOUT (entire packages never seen in training)",
-      "train_size": 4364,
-      "test_size": 1120,
+      "train_size": 4378,
+      "test_size": 1126,
       "compatibility": {
-        "accuracy": 0.875,
-        "f1_score": 0.845
+        "accuracy": 0.8774,
+        "f1_score": 0.8491
       },
       "error_type": {
-        "accuracy": 0.8607,
-        "f1_score": 0.8319
+        "accuracy": 0.8615,
+        "f1_score": 0.8325
       },
       "held_out_packages_sample": [
         "async-timeout",

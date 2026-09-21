@@ -28,6 +28,40 @@ def _detect_platform_key(system, machine):
     return f"{system}_{machine}"
 
 
+KNOWN_PLATFORM_KEYS = ("darwin_x86_64", "darwin_arm64", "linux_x86_64", "linux_aarch64", "win_amd64")
+
+_OS_ALIASES = {"darwin": "darwin", "macos": "darwin", "mac": "darwin", "osx": "darwin",
+               "linux": "linux",
+               "windows": "windows", "win32": "windows", "win": "windows"}
+_ARCH_ALIASES = {"x86_64": "x86_64", "amd64": "x86_64",
+                 "arm64": "arm64", "aarch64": "arm64"}
+
+
+def platform_key_from_os_arch(os_name, arch):
+    """
+    Maps a submitted (os, arch) pair -- e.g. from a crowd-sourced observation
+    that reports "platform": "linux", "arch": "x86_64" as separate fields,
+    unlike data.json's single combined platform_key -- onto one of the model's
+    known platform_key strings.
+
+    Returns None (not a guess, not a newly-invented key) if the combo doesn't
+    resolve to one of KNOWN_PLATFORM_KEYS. Deliberately stricter than
+    _detect_platform_key() above, which falls back to inventing an
+    "{system}_{machine}" string for local host-detection purposes where that's
+    harmless -- a value never used to encode the model's package_map/platform_map,
+    doesn't get near training data, and can't corrupt it silently.
+    """
+    os_key = _OS_ALIASES.get(str(os_name).strip().lower())
+    arch_key = _ARCH_ALIASES.get(str(arch).strip().lower())
+    if os_key is None or arch_key is None:
+        return None
+
+    if os_key == "windows":
+        return "win_amd64" if arch_key == "x86_64" else None
+    candidate = f"{os_key}_{arch_key}"
+    return candidate if candidate in KNOWN_PLATFORM_KEYS else None
+
+
 def _detect_nvidia_gpu():
     """Best-effort NVIDIA GPU/CUDA probe via `nvidia-smi`, if present on PATH."""
     try:
