@@ -251,7 +251,9 @@
         <div class="form-group">
           <label for="deployCode">Local packages</label>
           <textarea id="deployCode" rows="6" placeholder="boto3==1.42.49&#10;requests==2.32.5&#10;pywin32==308"
-            style="width:100%;resize:vertical;background:var(--bg-glass);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);padding:0.75rem;font-family:inherit;font-size:0.85rem"></textarea>
+            style="width:100%;resize:vertical;background:var(--bg-glass);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);padding:0.75rem;font-family:inherit;font-size:0.85rem">boto3==1.42.49
+requests==2.32.5
+pywin32==308</textarea>
         </div>
 
         <div class="form-grid">
@@ -671,7 +673,12 @@
         }
       });
 
-      // Failing packages chart
+      // Failing packages chart. Bars plot FAILURE rate (100 - compatibility_rate),
+      // not compatibility_rate directly -- this chart's whole purpose is to
+      // spotlight the worst packages, but a package at 0% compatibility (the
+      // worst possible, and there are 27 of them in this dataset) previously
+      // rendered as a literal zero-width bar on a "Compat %" axis, making the
+      // chart look empty for exactly the rows it exists to highlight.
       const pkgStats = statsData.package_stats || {};
       const failPkgs = Object.entries(pkgStats)
         .filter(([, s]) => s.compatibility_rate < 100)
@@ -682,8 +689,8 @@
         data: {
           labels: failPkgs.map(([n]) => n),
           datasets: [{
-            label: 'Compat %',
-            data: failPkgs.map(([, s]) => s.compatibility_rate),
+            label: 'Failure %',
+            data: failPkgs.map(([, s]) => 100 - s.compatibility_rate),
             backgroundColor: failPkgs.map(([, s]) => s.compatibility_rate < 30 ? '#ef4444' : s.compatibility_rate < 70 ? '#f59e0b' : '#10b981'),
             borderRadius: 6,
             borderSkipped: false,
