@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""
+compactiq - Single interactive entry point.
+
+Run it with no arguments: shows a quick system check, then asks for a project
+to check -- a local path or a GitHub repo (owner/repo, a full URL, or an SSH
+remote). It scans every requirements*.txt in that project for a chosen deploy
+target and offers to apply the fixes. This is a thin interactive wrapper
+around fix_project_requirements.py's existing pipeline -- nothing here
+duplicates its logic, it just removes the need to remember flags.
+
+Usage:
+    ./compactiq
+    python3 compactiq
+"""
+
+import os
+import sys
+
+from hardware_profile import detect_host, describe_host
+from fix_project_requirements import resolve_project_source, fix_project, _print_summary
+
+DEPLOY_TARGETS = {
+    "1": ("linux_x86_64", "AWS EC2 / most cloud VMs (x86_64)"),
+    "2": ("linux_aarch64", "AWS Graviton / ARM cloud instances"),
+    "3": ("win_amd64", "Windows Server"),
+    "4": ("darwin_arm64", "Apple Silicon Mac"),
+    "5": ("darwin_x86_64", "Intel Mac"),
+}
+
+
+def _prompt(label, default=None):
+    suffix = f" [{default}]" if default else ""
+    val = input(f"{label}{suffix}: ").strip()
+    return val or default
+
+
+def main():
+    print("=" * 62)
+    print("  CompactIQ -- Python Dependency Compatibility Checker")
+    print("=" * 62)
+    print("\nChecking your system...")
+    profile = detect_host()
+    print(f"  {describe_host(profile)}")
+    print(f"  Detected platform_key: {profile['platform_key']}")
+
+    print()
+    source = _prompt("Project path or GitHub repo (owner/repo or URL) to check")
+    if not source:
+        print("Nothing entered, exiting.")
+        sys.exit(0)
+
+    print()
+    print("Deploy target:")
+    for key, (platform_key, label) in DEPLOY_TARGETS.items():
+        print(f"  {key}) {label} [{platform_key}]")
+    choice = _prompt("Choose a number", default="1")
+    deploy_platform = DEPLOY_TARGETS.get(choice, DEPLOY_TARGETS["1"])[0]
+
+    docker_verify = _prompt("Verify with real Docker installs too? (slower, linux targets only) [y/N]", default="n")
+    docker_verify = docker_verify.lower().startswith("y")
+
+    print()
+    try:
+        project_dir = resolve_project_source(source)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"\nScanning {project_dir} for target {deploy_platform} ...\n")
+    results = fix_project(
+        project_dir,
+        deploy_platform=deploy_platform,
+        docker_verify=docker_verify,
+        apply=False,
+        log=print,
+    )
+    _print_summary(results, apply=False)
+
+    changed = [r for r in results if not r["skipped"] and r["changed"]]
+    if not changed:
+        print("\nNothing to apply.")
+        return
+
+    do_apply = _prompt(f"\nApply the {len(changed)} fix(es) to disk? A .bak backup is made for each [y/N]", default="n")
+    if do_apply.lower().startswith("y"):
+        print()
+        results = fix_project(
+            project_dir,
+            deploy_platform=deploy_platform,
+            docker_verify=docker_verify,
+            apply=True,
+            log=print,
+        )
+        _print_summary(results, apply=True)
+    else:
+        print("Not applied. Re-run and answer yes, or use fix_project_requirements.py --apply directly.")
+
+
+if __name__ == "__main__":
+    main()
