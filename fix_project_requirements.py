@@ -99,8 +99,10 @@ def fix_project(project_dir, python_version="3.12", deploy_platform="linux_x86_6
             log(f"  -> applied, backup saved to {backup_path}")
         elif changed:
             log(f"  -> would change (dry run, no files written)")
-        else:
+        elif result["fully_resolved"]:
             log(f"  -> safe, no changes needed")
+        else:
+            log(f"  -> UNSAFE, no automatic fix available")
 
         results.append({
             "file": path,
@@ -135,6 +137,17 @@ def _print_summary(results, apply):
             print(f"⏭️  {r['file']} -- {r['reason']}")
             continue
         if not r["changed"]:
+            if not r["safe"]:
+                # No correction was possible (e.g. a misspelled/hallucinated
+                # package name doesn't exist under ANY version, so there's
+                # nothing to change TO) -- that's the opposite of "safe as-is",
+                # and reporting it that way would silently hide exactly the
+                # hallucinated-package case this tool exists to catch.
+                print(f"❌ {r['file']} -- UNSAFE, no automatic fix available")
+                for p in r["packages"]:
+                    if not p["is_clean"]:
+                        print(f"     {p['package']}=={p['requested_version']}: {p['explanation']}")
+                continue
             print(f"✅ {r['file']} -- safe as-is")
             continue
         status = "✅ fixed" if r["safe"] else "⚠️  best attempt, still not fully safe"
@@ -143,6 +156,8 @@ def _print_summary(results, apply):
         for p in r["packages"]:
             if p["changed"]:
                 print(f"     {p['package']}: {p['requested_version']} -> {p['corrected_version']}")
+            elif not p["is_clean"]:
+                print(f"     {p['package']}=={p['requested_version']}: still unresolved -- {p['explanation']}")
     print()
     if changed and not apply:
         print("This was a dry run -- nothing was written. Re-run with --apply to write the fixes")
