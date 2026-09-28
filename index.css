@@ -9,7 +9,7 @@
   /* Color palette */
   --bg-primary: #0a0e1a;
   --bg-secondary: #111827;
-  --bg-card: rgba(17, 24, 39, 0.7);
+  --bg-card: rgba(17, 24, 39, 0.85);
   --bg-card-hover: rgba(31, 41, 55, 0.8);
   --bg-glass: rgba(255, 255, 255, 0.03);
   --bg-glass-hover: rgba(255, 255, 255, 0.06);
@@ -85,13 +85,18 @@ body::before {
 }
 
 /* ---- Header ---- */
+/* Sticky + backdrop-filter is the classic jank combo: a blurred element that
+   stays put while content scrolls behind it has to recompute that blur every
+   frame. Cut from blur(20px) to blur(6px) (compositing cost scales roughly
+   with blur radius squared, not linearly) and raised the background opacity
+   to compensate -- still reads as frosted glass, far cheaper to render. */
 .header {
   position: sticky;
   top: 0;
   z-index: 100;
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  background: rgba(10, 14, 26, 0.8);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  background: rgba(10, 14, 26, 0.92);
   border-bottom: 1px solid var(--border);
   padding: 1rem 2rem;
 }
@@ -223,14 +228,19 @@ body::before {
 }
 
 /* ---- Cards ---- */
+/* No backdrop-filter here on purpose: this class is applied to every panel
+   on the page (stat cards, Compatibility Checker, Dependency Assistant,
+   every Analytics chart card, Deploy Check) -- each one sitting on top of
+   body::before's fixed animated gradient. A blurred layer has to resample
+   whatever's behind it on every scroll frame, and that cost compounds with
+   every card on screen at once; this was the main source of scroll jank.
+   --bg-card is already 85% opaque, which reads as solid without it. */
 .card {
   background: var(--bg-card);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   padding: 1.5rem;
-  transition: var(--transition);
+  transition: background-color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
 }
 
 .card:hover {
