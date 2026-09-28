@@ -21,8 +21,18 @@ package[extra]==1.2.3, -r includes, or --index-url options are left untouched
 (not validated, not flagged, not modified) -- this only fixes what it's certain
 about the syntax of.
 
+Also accepts a GitHub repo directly in place of a local path -- a full URL
+(https://github.com/owner/repo, with or without .git), an SSH remote
+(git@github.com:owner/repo.git), or the "owner/repo" shorthand. It's cloned
+(shallow, --depth 1) into ./<repo-name> in the current directory so --apply's
+changes land somewhere you can inspect, diff, and push from afterward -- not a
+throwaway temp dir. Refuses to clone over an existing directory of the same
+name rather than silently reusing or overwriting whatever's already there.
+
 Usage:
     python fix_project_requirements.py /path/to/project
+    python fix_project_requirements.py https://github.com/owner/repo
+    python fix_project_requirements.py owner/repo
     python fix_project_requirements.py /path/to/project --deploy-target linux_aarch64
     python fix_project_requirements.py /path/to/project --docker-verify
     python fix_project_requirements.py /path/to/project --apply
@@ -33,6 +43,8 @@ import argparse
 import fnmatch
 import json
 import os
+import re
+import subprocess
 import sys
 
 from pycompat_model import PyCompatModel
@@ -40,6 +52,42 @@ from validate import validate_install_code, parse_pip_install
 
 SKIP_DIRS = {".git", "node_modules", "venv", ".venv", "env", "__pycache__",
              "site-packages", "dist", "build", ".tox", ".mypy_cache"}
+
+_GITHUB_URL_RE = re.compile(r"^(?:https?://github\.com/|git@github\.com:)([\w.-]+)/([\w.-]+?)(?:\.git)?/?$")
+_SHORTHAND_RE = re.compile(r"^([\w.-]+)/([\w.-]+)$")
+
+
+def is_repo_reference(source):
+    """True if `source` looks like a GitHub repo reference rather than a local path."""
+    if os.path.exists(source):
+        return False
+    return bool(_GITHUB_URL_RE.match(source)) or bool(_SHORTHAND_RE.match(source))
+
+
+def resolve_project_source(source, log=print):
+    """
+    If `source` is a local path, returns it unchanged. If it's a GitHub repo
+    reference, clones it (shallow) into ./<repo-name> and returns that local
+    path. Raises FileExistsError if that directory already exists, rather
+    than guessing whether to reuse or overwrite someone's existing checkout.
+    """
+    if not is_repo_reference(source):
+        return source
+
+    m = _GITHUB_URL_RE.match(source) or _SHORTHAND_RE.match(source)
+    owner, repo = m.group(1), m.group(2)
+    clone_url = f"https://github.com/{owner}/{repo}.git"
+    dest = os.path.join(os.getcwd(), repo)
+
+    if os.path.exists(dest):
+        raise FileExistsError(
+            f"'{dest}' already exists -- refusing to clone over it. "
+            f"Remove it, rename it, or point directly at that path instead."
+        )
+
+    log(f"Cloning {clone_url} -> {dest} ...")
+    subprocess.run(["git", "clone", "--depth", "1", clone_url, dest], check=True)
+    return dest
 
 
 def find_requirements_files(project_dir, pattern="requirements*.txt", max_depth=6):
@@ -166,7 +214,9 @@ def _print_summary(results, apply):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="Scan a project for requirements*.txt files and check/fix them for a deploy target")
-    ap.add_argument("project_dir", help="Path to the project root to scan")
+    ap.add_argument("project_dir", help="Path to the project root to scan, or a GitHub repo "
+                                         "(https://github.com/owner/repo, git@github.com:owner/repo.git, "
+                                         "or owner/repo) to clone and scan")
     ap.add_argument("--python-version", default="3.12")
     ap.add_argument("--deploy-target", default="linux_x86_64",
                      help="Target platform_key (default linux_x86_64 -- standard AWS EC2/most cloud targets)")
@@ -177,15 +227,22 @@ if __name__ == "__main__":
     ap.add_argument("--json", action="store_true", help="Print machine-readable JSON instead of the summary")
     args = ap.parse_args()
 
+    log = (lambda msg: None) if args.json else print
+    try:
+        project_dir = resolve_project_source(args.project_dir, log=log)
+    except (FileExistsError, subprocess.CalledProcessError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
     results = fix_project(
-        args.project_dir,
+        project_dir,
         python_version=args.python_version,
         deploy_platform=args.deploy_target,
         pattern=args.pattern,
         live=not args.no_live,
         docker_verify=args.docker_verify,
         apply=args.apply,
-        log=(lambda msg: None) if args.json else print,
+        log=log,
     )
 
     if args.json:
