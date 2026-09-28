@@ -19,6 +19,7 @@ import sys
 
 from hardware_profile import detect_host, describe_host
 from fix_project_requirements import resolve_project_source, fix_project, _print_summary
+from llm_fallback import llm_available
 
 DEPLOY_TARGETS = {
     "1": ("linux_x86_64", "AWS EC2 / most cloud VMs (x86_64)"),
@@ -60,6 +61,15 @@ def main():
     docker_verify = _prompt("Verify with real Docker installs too? (slower, linux targets only) [y/N]", default="n")
     docker_verify = docker_verify.lower().startswith("y")
 
+    use_llm = False
+    if llm_available():
+        use_llm_answer = _prompt(
+            "Consult an LLM for packages outside the trained catalog too? "
+            "(unverified second opinion, auto-forces real Docker verification for those) [y/N]", default="n")
+        use_llm = use_llm_answer.lower().startswith("y")
+    # else: no GROQ_API_KEY configured -- silently skip asking a question
+    # whose answer couldn't do anything.
+
     print()
     try:
         project_dir = resolve_project_source(source)
@@ -72,6 +82,7 @@ def main():
         project_dir,
         deploy_platform=deploy_platform,
         docker_verify=docker_verify,
+        use_llm=use_llm,
         apply=False,
         log=print,
     )
@@ -89,6 +100,7 @@ def main():
             project_dir,
             deploy_platform=deploy_platform,
             docker_verify=docker_verify,
+            use_llm=use_llm,
             apply=True,
             log=print,
         )

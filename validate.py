@@ -16,6 +16,17 @@ wheel while transitively depending on something OS-locked (confirmed real case:
 truth via docker_verify.py: it actually runs `pip install` + `import` in a
 container for anything that looks clean, opt-in because each container run costs
 5-15+ seconds.
+
+Pass use_llm=True to also consult an LLM (llm_fallback.py, via Groq) for
+packages outside the trained catalog (is_known_package=False) -- exactly the
+case where pycompat_model.py's own prediction is documented as "an
+extrapolation, not a real signal." The LLM's opinion is surfaced labeled and
+UNVERIFIED, never as fact (it can hallucinate a package's existence just as
+easily as the classifier can guess wrong), and enabling it automatically
+forces real Docker verification for that specific package regardless of the
+docker_verify flag -- an unknown-to-ML package is exactly the case that most
+needs real ground truth, LLM opinion or not. No-ops safely (available=False)
+if GROQ_API_KEY isn't set.
 """
 
 import re
@@ -27,6 +38,7 @@ import live_verify
 from dependency_conflicts import check_batch
 from explain import explain_package_result, suggest_correction
 from docker_verify import docker_verify_install
+from llm_fallback import ask_llm_about_package
 
 PIN_RE = re.compile(r"([A-Za-z0-9_.\-]+)\s*==\s*([A-Za-z0-9_.\-]+)")
 
@@ -36,7 +48,7 @@ def parse_pip_install(code):
     return PIN_RE.findall(code)
 
 
-def _evaluate_pins(pins_dict, python_version, platform, model, live, docker_verify=False):
+def _evaluate_pins(pins_dict, python_version, platform, model, live, docker_verify=False, use_llm=False):
     """
     One evaluation pass over a fixed set of {package: version} pins: joint
     conflict check + per-package ML/live verdict + a proposed correction for
@@ -51,6 +63,13 @@ def _evaluate_pins(pins_dict, python_version, platform, model, live, docker_veri
         universal wheel that transitively depends on something OS-locked.
         Only runs for packages that pass the cheap metadata check first, to
         keep the (slow, 5-15s/container) Docker calls bounded.
+
+    use_llm: when True, consults an LLM for any package outside the trained
+        catalog (see llm_fallback.py). Its opinion is folded into the
+        explanation labeled as unverified, and -- regardless of the
+        docker_verify flag -- forces a real Docker verification for that
+        package too, since an unknown-to-ML package is exactly the case that
+        most needs real ground truth.
     """
     if live:
         conflict_report = check_batch(pins_dict, python_version, platform)
@@ -77,9 +96,33 @@ def _evaluate_pins(pins_dict, python_version, platform, model, live, docker_veri
         pkg_conflicts = conflicts_by_pkg.get(pkg, [])
         verdict = explain_package_result(ml_result, live_result, pkg_conflicts)
 
+        llm_result = None
+        force_docker_for_unknown = False
+        if use_llm and ml_result.get("is_known_package") is False:
+            llm_result = ask_llm_about_package(pkg, version, python_version, platform)
+            force_docker_for_unknown = True
+            if llm_result.get("available"):
+                llm_label = (llm_result["verdict"] or "unknown").upper()
+                verdict = {**verdict, "explanation": (
+                    f"{verdict['explanation']} LLM second opinion (unverified, NOT ground truth -- "
+                    f"an LLM can hallucinate a package's existence just as easily as the classifier "
+                    f"can guess wrong): {llm_label} -- {llm_result['opinion']}"
+                )}
+            else:
+                # Surfaced explicitly rather than silently doing nothing --
+                # the same transparency fix applied earlier for
+                # docker_verify_ineffective. Requesting an LLM opinion and
+                # getting a normal result back should never look identical to
+                # it actually running when GROQ_API_KEY is missing/invalid or
+                # the request failed.
+                verdict = {**verdict, "explanation": (
+                    f"{verdict['explanation']} (LLM second opinion was requested but unavailable: "
+                    f"{llm_result.get('error')})"
+                )}
+
         docker_result = None
         docker_confirmed_failure = False
-        if docker_verify:
+        if docker_verify or force_docker_for_unknown:
             # Metadata can be DEFINITIVELY certain something is impossible
             # (no wheel, no sdist at all -- literally nothing to install) --
             # no point spending 5-15s confirming the obvious. Anything short
@@ -189,6 +232,7 @@ def _evaluate_pins(pins_dict, python_version, platform, model, live, docker_veri
             "ml_result": ml_result,
             "live_result": live_result,
             "docker_result": docker_result,
+            "llm_result": llm_result,
             "conflicts": pkg_conflicts,
             **verdict,
         })
@@ -197,7 +241,7 @@ def _evaluate_pins(pins_dict, python_version, platform, model, live, docker_veri
 
 
 def validate_install_code(code, python_version="3.12", platform="darwin_x86_64", model=None, live=True,
-                           max_passes=3, docker_verify=False):
+                           max_passes=3, docker_verify=False, use_llm=False):
     """
     Args:
         code: raw text containing one or more `package==version` pins
@@ -220,6 +264,11 @@ def validate_install_code(code, python_version="3.12", platform="darwin_x86_64",
               linux_x86_64/linux_aarch64 targets and requires a running Docker
               daemon; slow (5-15s per container) and OFF by default -- opt in
               when you want real ground truth, not just PyPI metadata.
+        use_llm: when True, consults an LLM (llm_fallback.py) for any package
+              outside the trained catalog -- surfaced labeled as an unverified
+              second opinion, never as fact -- and forces real Docker
+              verification for that package regardless of docker_verify.
+              No-ops safely if GROQ_API_KEY isn't set.
 
     Returns a dict matching the shape of the middleware repo's
     /api/validate-llm-code response: original code, corrected code, an overall
@@ -238,7 +287,7 @@ def validate_install_code(code, python_version="3.12", platform="darwin_x86_64",
     # Without this, checking "verify with Docker" in the UI and getting a normal
     # result back looks identical whether or not any container ever actually ran.
     docker_verify_available = None
-    if docker_verify:
+    if docker_verify or use_llm:
         from docker_verify import docker_available
         docker_verify_available = docker_available()
 
@@ -249,6 +298,7 @@ def validate_install_code(code, python_version="3.12", platform="darwin_x86_64",
             "explanation": "No `package==version` pins found to validate.",
             "docker_verify_requested": docker_verify,
             "docker_verify_available": docker_verify_available,
+            "use_llm": use_llm,
         }
 
     original_pins = {pkg: ver for pkg, ver in pins}
@@ -268,7 +318,7 @@ def validate_install_code(code, python_version="3.12", platform="darwin_x86_64",
     passes_run = 0
     for passes_run in range(1, max_passes + 1):
         per_package, conflict_report, next_pins, any_change, marker_exclusions, package_renames = _evaluate_pins(
-            current_pins, python_version, platform, model, live, docker_verify=docker_verify
+            current_pins, python_version, platform, model, live, docker_verify=docker_verify, use_llm=use_llm
         )
         all_marker_exclusions.update(marker_exclusions)
         all_package_renames.update(package_renames)
@@ -321,6 +371,7 @@ def validate_install_code(code, python_version="3.12", platform="darwin_x86_64",
                 "ml_result": None,
                 "live_result": None,
                 "docker_result": None,
+                "llm_result": None,
                 "conflicts": [],
                 "risk_score": 0.0,
                 "explanation": (
@@ -346,6 +397,7 @@ def validate_install_code(code, python_version="3.12", platform="darwin_x86_64",
                 "ml_result": None,
                 "live_result": None,
                 "docker_result": None,
+                "llm_result": None,
                 "conflicts": [],
                 "risk_score": 0.0,
                 "explanation": (
@@ -372,6 +424,7 @@ def validate_install_code(code, python_version="3.12", platform="darwin_x86_64",
             "ml_result": matching["ml_result"] if matching else None,
             "live_result": matching["live_result"] if matching else None,
             "docker_result": matching["docker_result"] if matching else None,
+            "llm_result": matching["llm_result"] if matching else None,
             "conflicts": matching["conflicts"] if matching else [],
             "risk_score": issue["risk_score"] if issue else (matching["risk_score"] if matching else 0.0),
             "explanation": issue["explanation"] if issue else (matching["explanation"] if matching else ""),
@@ -390,6 +443,7 @@ def validate_install_code(code, python_version="3.12", platform="darwin_x86_64",
         "fully_resolved": fully_resolved,
         "docker_verify_requested": docker_verify,
         "docker_verify_available": docker_verify_available,
+        "use_llm": use_llm,
     }
     if not fully_resolved:
         if passes_run >= max_passes:

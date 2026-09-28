@@ -294,6 +294,11 @@ pywin32==308</textarea>
           🐳 Verify with real Docker installs (slower, but catches failures PyPI metadata alone can't see -- Linux targets only)
         </label>
 
+        <label style="display:flex;align-items:center;gap:0.5rem;font-size:0.82rem;color:var(--text-secondary);margin:0.75rem 0;cursor:pointer">
+          <input type="checkbox" id="deployUseLlm" style="width:auto">
+          🤖 Ask an LLM about packages outside the trained catalog (unverified second opinion; auto-runs real Docker verification for those too)
+        </label>
+
         <button class="btn btn-primary" onclick="checkDeploy()" id="deployBtn">🚀 Check Deploy Compatibility</button>
 
         <div id="deployResult" style="display:none;margin-top:1.5rem"></div>
@@ -532,10 +537,11 @@ pywin32==308</textarea>
       const deployPlatform = deploySelect.value;
       const deployLabel = deploySelect.options[deploySelect.selectedIndex].text;
       const dockerVerify = document.getElementById('deployDockerVerify').checked;
+      const useLlm = document.getElementById('deployUseLlm').checked;
 
       const btn = document.getElementById('deployBtn');
       btn.disabled = true;
-      btn.innerHTML = dockerVerify
+      btn.innerHTML = (dockerVerify || useLlm)
         ? '<span class="spinner"></span> Running real Docker installs (this can take a while)...'
         : '<span class="spinner"></span> Checking...';
 
@@ -545,7 +551,7 @@ pywin32==308</textarea>
         body: JSON.stringify({
           code, python_version: py,
           local_platform: localPlatform, deploy_platform: deployPlatform,
-          docker_verify: dockerVerify,
+          docker_verify: dockerVerify, use_llm: useLlm,
         })
       });
 

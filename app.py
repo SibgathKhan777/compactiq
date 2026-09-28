@@ -563,11 +563,14 @@ def chat():
         wants_docker_verify = data.get("docker_verify", False) or any(
             kw in lowered_message for kw in ("verify with docker", "docker verify", "really test", "actually test", "docker test")
         )
+        wants_use_llm = data.get("use_llm", False) or any(
+            kw in lowered_message for kw in ("use llm", "ask llm", "llm opinion", "second opinion")
+        )
         try:
             comparison = compare_local_vs_deploy(
                 message, python_version, local_platform_for_check,
                 deploy_platform=deploy_platform, model=chat_model, live=live,
-                docker_verify=wants_docker_verify,
+                docker_verify=wants_docker_verify, use_llm=wants_use_llm,
             )
         except Exception as e:
             return jsonify({"error": str(e)}), 500
@@ -582,8 +585,14 @@ def chat():
             "parsed_pins_found": True, "suggested_stack": stack_label,
         })
 
+    wants_use_llm = data.get("use_llm", False) or any(
+        kw in lowered_message for kw in ("use llm", "ask llm", "llm opinion", "second opinion")
+    )
     try:
-        result = validate_install_code(message, python_version=python_version, platform=platform_key, model=chat_model, live=live)
+        result = validate_install_code(
+            message, python_version=python_version, platform=platform_key,
+            model=chat_model, live=live, use_llm=wants_use_llm,
+        )
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -608,6 +617,10 @@ def deploy_check_route():
         failures no metadata check can see -- e.g. a package with a
         platform-universal wheel that transitively depends on something
         OS-locked. Slow (5-15s per package); off by default.
+    use_llm: when true, consults an LLM for any deploy-side package outside
+        the trained catalog -- labeled, unverified second opinion, and
+        automatically forces real Docker verification for that package too;
+        needs GROQ_API_KEY set. Off by default.
 
     Response:
         { "safe_to_deploy": bool, "regressions": [...], "local": {...}, "deploy": {...} }
@@ -629,6 +642,7 @@ def deploy_check_route():
             model=chat_model,
             live=data.get("live", True),
             docker_verify=data.get("docker_verify", False),
+            use_llm=data.get("use_llm", False),
         )
         return jsonify(result)
     except Exception as e:

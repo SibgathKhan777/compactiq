@@ -117,12 +117,12 @@ def validate():
     Validate (and if needed, correct) LLM-generated `pip install` code -- the
     same contract as the middleware repo's /api/validate-llm-code, built from
     this repo's own ML model + live PyPI verification + joint dependency
-    checking. No LLM call involved; Docker is opt-in (see docker_verify).
+    checking. LLM calls are opt-in (see use_llm), same as Docker (docker_verify).
 
     Request body:
         { "code": "pip install torch==2.8.0 torchvision==0.17.0",
           "python_version": "3.12", "platform": "darwin_x86_64",
-          "live": true, "docker_verify": false }
+          "live": true, "docker_verify": false, "use_llm": false }
 
     docker_verify: when true, runs real `pip install` + `import` tests in
         Docker containers for anything that looks clean from metadata alone
@@ -130,6 +130,13 @@ def validate():
         daemon). Catches failures no metadata check can see -- e.g. a package
         with a platform-universal wheel that transitively depends on
         something OS-locked. Slow (5-15s per package); off by default.
+
+    use_llm: when true, consults an LLM (via Groq, needs GROQ_API_KEY set) for
+        any package outside the trained catalog, surfaced as a labeled,
+        unverified second opinion -- never as fact. Automatically forces real
+        Docker verification for that specific package too, regardless of
+        docker_verify: a package unknown to the ML model is exactly the case
+        that most needs real ground truth. Off by default.
 
     Response:
         { "original_code": ..., "corrected_code": ..., "risk_score": ...,
@@ -146,6 +153,7 @@ def validate():
         model=model,
         live=data.get("live", True),
         docker_verify=data.get("docker_verify", False),
+        use_llm=data.get("use_llm", False),
     )
     return jsonify(result)
 
@@ -164,7 +172,11 @@ def deploy_check():
         Python version than local), "live": false (ML-only), "docker_verify": true
         (runs real `pip install` + `import` tests in Docker containers for the
         deploy side -- linux targets only, requires a running Docker daemon,
-        slow at 5-15s/package, catches failures no metadata check can see).
+        slow at 5-15s/package, catches failures no metadata check can see),
+        "use_llm": true (consults an LLM for any deploy-side package outside
+        the trained catalog -- labeled, unverified second opinion, and
+        automatically forces real Docker verification for that package too;
+        needs GROQ_API_KEY set, off by default).
 
     Response:
         { "safe_to_deploy": bool, "regressions": [...], "local": {...}, "deploy": {...} }
@@ -182,6 +194,7 @@ def deploy_check():
         model=model,
         live=data.get("live", True),
         docker_verify=data.get("docker_verify", False),
+        use_llm=data.get("use_llm", False),
     )
     return jsonify(result)
 

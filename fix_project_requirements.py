@@ -108,7 +108,7 @@ def find_requirements_files(project_dir, pattern="requirements*.txt", max_depth=
 
 def fix_project(project_dir, python_version="3.12", deploy_platform="linux_x86_64",
                  pattern="requirements*.txt", model=None, live=True, docker_verify=False,
-                 apply=False, log=None):
+                 use_llm=False, apply=False, log=None):
     """
     Returns a list of per-file result dicts:
         { "file", "skipped", "reason" }  -- if no recognizable pins found, or
@@ -132,7 +132,7 @@ def fix_project(project_dir, python_version="3.12", deploy_platform="linux_x86_6
 
         result = validate_install_code(
             original_content, python_version=python_version, platform=deploy_platform,
-            model=model, live=live, docker_verify=docker_verify,
+            model=model, live=live, docker_verify=docker_verify, use_llm=use_llm,
         )
 
         changed = result["corrected_code"] != original_content
@@ -222,6 +222,10 @@ if __name__ == "__main__":
                      help="Target platform_key (default linux_x86_64 -- standard AWS EC2/most cloud targets)")
     ap.add_argument("--pattern", default="requirements*.txt", help="Filename glob to match (default: requirements*.txt)")
     ap.add_argument("--docker-verify", action="store_true", help="Also run real Docker install tests (slow, needs Docker running)")
+    ap.add_argument("--use-llm", action="store_true",
+                     help="Consult an LLM (via Groq, needs GROQ_API_KEY set) for any package outside the "
+                          "trained catalog -- labeled, unverified second opinion, and automatically forces "
+                          "real Docker verification for that package too")
     ap.add_argument("--no-live", action="store_true", help="Skip live PyPI checks (ML-only, faster, less accurate)")
     ap.add_argument("--apply", action="store_true", help="Actually write fixes to disk (default: dry run only)")
     ap.add_argument("--json", action="store_true", help="Print machine-readable JSON instead of the summary")
@@ -241,6 +245,7 @@ if __name__ == "__main__":
         pattern=args.pattern,
         live=not args.no_live,
         docker_verify=args.docker_verify,
+        use_llm=args.use_llm,
         apply=args.apply,
         log=log,
     )
