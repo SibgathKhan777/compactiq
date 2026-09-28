@@ -148,6 +148,17 @@ def compare_local_vs_deploy(code, python_version, local_platform, deploy_platfor
                 "reason": deploy_p["explanation"],
             })
 
+    # Surfaced at the top level (mirroring deploy_result's own flags) so a
+    # caller doesn't have to know to dig into "deploy" to tell "Docker
+    # verification was requested and actually ran" apart from "was requested
+    # but the Docker daemon/binary isn't present on this host, so every
+    # docker_result silently stayed null" -- those two cases produce an
+    # otherwise-identical response, which is exactly what made this look like
+    # a broken feature rather than an unmet prerequisite.
+    docker_verify_ineffective = (
+        docker_verify and deploy_result.get("docker_verify_available") is False
+    )
+
     return {
         "local_platform": local_platform,
         "local_python_version": python_version,
@@ -155,6 +166,9 @@ def compare_local_vs_deploy(code, python_version, local_platform, deploy_platfor
         "deploy_python_version": deploy_python_version,
         "local": local_result,
         "deploy": deploy_result,
+        "docker_verify_requested": docker_verify,
+        "docker_verify_available": deploy_result.get("docker_verify_available"),
+        "docker_verify_ineffective": docker_verify_ineffective,
         "regressions": regressions,
         "already_broken": already_broken,
         # "Safe to deploy" means what you actually pinned works on the target,

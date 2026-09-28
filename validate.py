@@ -231,11 +231,24 @@ def validate_install_code(code, python_version="3.12", platform="darwin_x86_64",
     model = model or PyCompatModel.load("./model")
     pins = parse_pip_install(code)
 
+    # Checked once up front (not the per-package silent None docker_verify_install()
+    # already returns when unavailable) so the caller can tell "Docker verification
+    # was requested and genuinely ran" apart from "was requested but silently did
+    # nothing" -- e.g. the Docker daemon/binary isn't present on this host at all.
+    # Without this, checking "verify with Docker" in the UI and getting a normal
+    # result back looks identical whether or not any container ever actually ran.
+    docker_verify_available = None
+    if docker_verify:
+        from docker_verify import docker_available
+        docker_verify_available = docker_available()
+
     if not pins:
         return {
             "original_code": code, "corrected_code": code, "changed": False,
             "risk_score": 0.0, "packages": [], "passes": 0, "fully_resolved": True,
             "explanation": "No `package==version` pins found to validate.",
+            "docker_verify_requested": docker_verify,
+            "docker_verify_available": docker_verify_available,
         }
 
     original_pins = {pkg: ver for pkg, ver in pins}
@@ -375,6 +388,8 @@ def validate_install_code(code, python_version="3.12", platform="darwin_x86_64",
         "packages": final_report,
         "passes": passes_run,
         "fully_resolved": fully_resolved,
+        "docker_verify_requested": docker_verify,
+        "docker_verify_available": docker_verify_available,
     }
     if not fully_resolved:
         if passes_run >= max_passes:

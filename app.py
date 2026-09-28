@@ -397,6 +397,13 @@ def _format_deploy_reply(comparison, host_profile, stack_label=None, deploy_labe
     if stack_label:
         lines.append(f"That sounds like a **{stack_label}** project.")
 
+    if comparison.get("docker_verify_ineffective"):
+        lines.append(
+            "🐳⚠️ Docker verification was requested but Docker isn't available on this server "
+            "(daemon not reachable, or the CLI isn't installed) -- what follows is metadata-only, "
+            "not a real container install."
+        )
+
     already_broken = comparison.get("already_broken", [])
 
     if comparison["safe_to_deploy"]:

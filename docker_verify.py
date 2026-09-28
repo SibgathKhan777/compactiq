@@ -29,11 +29,32 @@ from collect_platform_data import test_one, PLATFORM_TO_DOCKER
 
 
 def docker_available():
-    try:
-        r = subprocess.run(["docker", "info"], capture_output=True, timeout=5)
-        return r.returncode == 0
-    except Exception:
-        return False
+    """
+    True iff the Docker daemon actually responds right now.
+
+    The FIRST `docker info` call after Docker Desktop has just started (or
+    after the CLI's connection to the daemon has gone cold) can genuinely take
+    longer than a few seconds while it reconnects -- observed taking just
+    over 5s on this machine, with every call immediately after completing in
+    under 1.5s. A single short-timeout attempt turns that one slow cold-start
+    call into a permanent false negative for the whole request (a real,
+    running Docker daemon gets reported as "unavailable"). Two attempts with
+    a longer timeout on the first one costs nothing extra in the common case
+    (daemon already warm -> first attempt succeeds fast) and fixes the
+    cold-start case without silently retrying forever if Docker is genuinely
+    not running (a real absence, e.g. FileNotFoundError, still returns False
+    immediately on the first attempt -- no point retrying that).
+    """
+    for attempt_timeout in (12, 5):
+        try:
+            r = subprocess.run(["docker", "info"], capture_output=True, timeout=attempt_timeout)
+            if r.returncode == 0:
+                return True
+        except subprocess.TimeoutExpired:
+            continue
+        except Exception:
+            return False
+    return False
 
 
 def docker_verify_install(package, version, python_version, platform_key, timeout=90, install_build_tools=False):

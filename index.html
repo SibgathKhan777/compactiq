@@ -572,6 +572,12 @@ pywin32==308</textarea>
         <div style="font-size:0.8rem;color:var(--text-muted)">${deployLabel}</div>
       </div>`;
 
+      if (res.docker_verify_ineffective) {
+        html += `<div style="margin-top:1rem;padding:0.75rem;background:rgba(245,158,11,0.1);border:1px solid var(--warning);border-radius:var(--radius-sm);font-size:0.82rem;color:var(--warning)">
+          🐳⚠️ Docker verification was requested but Docker isn't available on this server (daemon not reachable, or the CLI isn't installed) -- the result below reflects metadata-only checks, not a real container install. Install/start Docker on the machine running this server to actually use this option.
+        </div>`;
+      }
+
       if (res.regressions.length) {
         html += '<div style="margin-top:1rem;font-size:0.78rem;color:var(--text-muted)">Works locally, breaks specifically on deploy:</div>';
         html += '<div style="margin-top:0.5rem;display:flex;flex-direction:column;gap:0.6rem">';
